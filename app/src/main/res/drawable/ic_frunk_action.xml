@@ -1,0 +1,36 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+    <!-- Upward directional arrow above front hood (frunk) -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M7,13 L7,5 M7,5 L3.8,8.2 M7,5 L10.2,8.2"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Open frunk hood angled up on the left -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M4,18.5 L12.5,14.2"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+    <!-- Lucid SUV body silhouette -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M4,22 L4,19.5 L12,18.5 L16,14 L26,14 L28.5,18.5 L28.5,22 Z"
+        android:strokeWidth="2.0"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Front and rear wheels -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M9.5,22.5 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M23,22.5 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" />
+</vector>

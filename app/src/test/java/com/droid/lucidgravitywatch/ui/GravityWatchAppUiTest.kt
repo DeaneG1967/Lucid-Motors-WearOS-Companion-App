@@ -1,0 +1,255 @@
+package com.droid.lucidgravitywatch.ui
+
+import android.app.Application
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.droid.lucidgravitywatch.model.BatteryPreconStatus
+import com.droid.lucidgravitywatch.model.ChargeState
+import com.droid.lucidgravitywatch.model.DefrostState
+import com.droid.lucidgravitywatch.model.DoorState
+import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.HvacPower
+import com.droid.lucidgravitywatch.model.LockState
+import com.droid.lucidgravitywatch.model.LucidRegion
+import com.droid.lucidgravitywatch.model.PowerState
+import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
+import com.droid.lucidgravitywatch.model.VehicleModel
+import com.droid.lucidgravitywatch.model.WalkawayState
+import com.droid.lucidgravitywatch.theme.LucidGravityWatchTheme
+import com.droid.lucidgravitywatch.viewmodel.GravityWatchUiState
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34], application = Application::class)
+class GravityWatchAppUiTest {
+
+    @get:Rule
+    val composeTestRule = createComposeRule()
+
+    private val sampleGravity = GravityVehicleSnapshot(
+        vehicleId = "veh-gravity-gt",
+        vin = "50EA1GBA7RA000888",
+        nickname = "Gravity GT",
+        model = VehicleModel.GRAVITY,
+        variantName = "Grand Touring",
+        paintColorName = "Aurora Green",
+        powerState = PowerState.CLOUD_1,
+        lockState = LockState.LOCKED,
+        walkawayState = WalkawayState.ACTIVE,
+        frunkState = DoorState.CLOSED,
+        rearTrunkState = DoorState.CLOSED,
+        chargePortState = DoorState.CLOSED,
+        frontLeftDoor = DoorState.CLOSED,
+        frontRightDoor = DoorState.CLOSED,
+        rearLeftDoor = DoorState.CLOSED,
+        rearRightDoor = DoorState.CLOSED,
+        batteryPercent = 84.0,
+        remainingRangeKm = 580.0,
+        batteryKwh = 100.8,
+        batteryCapacityKwh = 120.0,
+        batteryPreconStatus = BatteryPreconStatus.OFF,
+        chargeState = ChargeState.CABLE_CONNECTED,
+        chargeLimitPercent = 85,
+        chargeRateKw = 19.2,
+        chargeRateMph = 58.0,
+        sessionMinutesRemaining = 18,
+        interiorTempCelsius = 21.0,
+        exteriorTempCelsius = 16.0,
+        targetTempCelsius = 21.0,
+        hvacPower = HvacPower.PRECONDITION,
+        defrostState = DefrostState.OFF,
+        maxAcEnabled = false,
+        driverSeatHeatMode = SeatClimateMode.LOW,
+        driverSeatVentMode = SeatClimateMode.OFF,
+        passengerSeatHeatMode = SeatClimateMode.OFF,
+        steeringHeaterLevel = SteeringWheelHeaterLevel.LEVEL_1,
+        odometerKm = 3200.0,
+        softwareVersion = "2.5.12",
+        lastUpdatedMs = 1792113000000L
+    )
+
+    @Test
+    fun loginView_submitsEmailPasswordAndRegion() {
+        var submittedEmail = ""
+        var submittedPassword = ""
+        var submittedRegion = LucidRegion.US
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = GravityWatchUiState(
+                        isAuthenticated = false,
+                        selectedRegion = LucidRegion.EU
+                    ),
+                    onSelectRegion = {},
+                    onLogin = { email, pass, region ->
+                        submittedEmail = email
+                        submittedPassword = pass
+                        submittedRegion = region
+                    }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("LUCID CARS").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_email_input").performTextInput("pilot@lucidmotors.com")
+        composeTestRule.onNodeWithTag("login_password_input").performTextInput("Gravity2026!")
+        composeTestRule.onNodeWithTag("login_submit_button").performScrollTo().performClick()
+
+        assertEquals("pilot@lucidmotors.com", submittedEmail)
+        assertEquals("Gravity2026!", submittedPassword)
+        assertEquals(LucidRegion.EU, submittedRegion)
+    }
+
+    @Test
+    fun simplifiedDashboard_showsChargeLevelAtTopAndFiveIconButtonsBelow() {
+        var frunkClicked = false
+        var lockClicked = false
+        var trunkClicked = false
+        var hornClicked = false
+        var lightsClicked = false
+        val currentVehicle = mutableStateOf(sampleGravity)
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = GravityWatchUiState(
+                        isAuthenticated = true,
+                        vehicles = listOf(currentVehicle.value),
+                        selectedVehicleId = currentVehicle.value.vehicleId
+                    ),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onToggleFrunk = { frunkClicked = true },
+                    onToggleLock = {
+                        lockClicked = true
+                        currentVehicle.value = currentVehicle.value.copy(lockState = LockState.UNLOCKED)
+                    },
+                    onToggleRearTrunk = { trunkClicked = true },
+                    onHonkHorn = { hornClicked = true },
+                    onFlashLights = { lightsClicked = true }
+                )
+            }
+        }
+
+        // Verify charge level at top; sampleGravity has chargeRateKw = 19.2 (> 0.1kW)
+        composeTestRule.onNodeWithTag("charge_level_text").assertIsDisplayed()
+        composeTestRule.onNodeWithText("84%").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("charging_bolt_icon").assertIsDisplayed()
+        composeTestRule.onNodeWithText("19.2 kW").assertIsDisplayed()
+
+        // When plugged in with charging power < 0.1kW -> shows "PLUGGED IN"
+        currentVehicle.value = currentVehicle.value.copy(
+            chargeState = ChargeState.CABLE_CONNECTED,
+            chargeRateKw = 0.05
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("charging_bolt_icon").assertDoesNotExist()
+        composeTestRule.onNodeWithText("PLUGGED IN").assertIsDisplayed()
+
+        // When unplugged and charging power < 0.1kW -> shows vehicle nickname
+        currentVehicle.value = currentVehicle.value.copy(
+            chargeState = ChargeState.NOT_CONNECTED,
+            chargeRateKw = 0.0
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("GRAVITY GT").assertIsDisplayed()
+
+        // Verify Locked state initially shown on Door Lock/Unlock button
+        composeTestRule.onNodeWithContentDescription("Doors Locked - Tap to Unlock").assertIsDisplayed()
+
+        // 1. Frunk button requires confirmation ("Open Frunk?" when closed, "Close Frunk?" when open)
+        composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
+        org.junit.Assert.assertFalse(frunkClicked)
+        composeTestRule.onNodeWithText("Open Frunk?").assertIsDisplayed()
+        // Cancel does not send command
+        composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
+        org.junit.Assert.assertFalse(frunkClicked)
+        // Confirm sends command
+        composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
+        composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
+        assertTrue(frunkClicked)
+
+        // When Frunk is open, pressing Frunk shows "Close Frunk?"
+        currentVehicle.value = currentVehicle.value.copy(frunkState = DoorState.OPEN)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
+        composeTestRule.onNodeWithText("Close Frunk?").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
+
+        // 2. Door Lock/Unlock button requires confirmation ("Unlock Doors?" when locked, "Lock Doors?" when unlocked)
+        composeTestRule.onNodeWithTag("primary_lock_toggle_button").performClick()
+        org.junit.Assert.assertFalse(lockClicked)
+        composeTestRule.onNodeWithText("Unlock Doors?").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
+        assertTrue(lockClicked)
+        composeTestRule.onNodeWithContentDescription("Doors Unlocked - Tap to Lock").assertIsDisplayed()
+
+        // Now unlocked -> pressing Lock button shows "Lock Doors?"
+        composeTestRule.onNodeWithTag("primary_lock_toggle_button").performClick()
+        composeTestRule.onNodeWithText("Lock Doors?").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
+
+        // 3. Trunk button requires confirmation ("Open Trunk?" when closed, "Close Trunk?" when open)
+        composeTestRule.onNodeWithTag("overview_trunk_button").performClick()
+        org.junit.Assert.assertFalse(trunkClicked)
+        composeTestRule.onNodeWithText("Open Trunk?").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
+        assertTrue(trunkClicked)
+
+        currentVehicle.value = currentVehicle.value.copy(rearTrunkState = DoorState.OPEN)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overview_trunk_button").performClick()
+        composeTestRule.onNodeWithText("Close Trunk?").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
+
+        // 4. Horn and Lights trigger immediately without confirmation pop-up
+        composeTestRule.onNodeWithTag("overview_horn_button").performClick()
+        assertTrue(hornClicked)
+
+        composeTestRule.onNodeWithTag("overview_lights_button").performClick()
+        assertTrue(lightsClicked)
+    }
+
+    @Test
+    fun simplifiedDashboard_showsYellowPollingDotOnlyWhilePollingInInteractiveState() {
+        val isPollingState = mutableStateOf(true)
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = GravityWatchUiState(
+                        isAuthenticated = true,
+                        isInteractive = true,
+                        isPolling = isPollingState.value,
+                        vehicles = listOf(sampleGravity),
+                        selectedVehicleId = sampleGravity.vehicleId
+                    ),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("polling_indicator_dot").assertIsDisplayed()
+
+        isPollingState.value = false
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("polling_indicator_dot").assertDoesNotExist()
+    }
+}
+

@@ -7,4 +7,5 @@ The line of text just below the current charge percentage shows the car's nickna
 There's also a tiny yellow polling status dot that appears briefly at the very bottom of the screen each time the app polls Lucid's Cloud API. The app connects to the car through Lucid's cloud, so it works when both the car and the watch have access to the internet (WiFi or LTE) - exactly the same mechanism as Lucid's phone app.
 
 The Frunk, Door Locks, and Trunk buttons ask for user confirmation before sending their request to the cloud for safety.
+
 <img width="480" height="480" alt="watch_media_2026-10-20_15_15_17" src="https://github.com/user-attachments/assets/d72fff04-ba5d-4f21-8d15-da65875afff8" />

@@ -626,7 +626,7 @@ private fun SimplifiedWatchDashboard(
 
             // 2. Door Lock / Unlock Icon Button (yellow ring when unlocked, blank ring when locked)
             ControlIconButton(
-                drawableRes = if (isLocked) R.drawable.btn_doors_locked else R.drawable.ic_lock_open,
+                drawableRes = if (isLocked) R.drawable.lock_24px else R.drawable.lock_open_24px,
                 contentDesc = if (isLocked) "Doors Locked - Tap to Unlock" else "Doors Unlocked - Tap to Lock",
                 isActive = !isLocked,
                 isPrimaryCenter = true,
@@ -792,6 +792,7 @@ private fun ControlIconButton(
     isPrimaryCenter: Boolean,
     activeColor: Color,
     inactiveColor: Color = StealthBorder,
+    iconTint: Color = Color(0xFFDEC79B),
     onClick: () -> Unit,
     testTag: String
 ) {
@@ -819,12 +820,34 @@ private fun ControlIconButton(
         color = ObsidianBlack,
         shape = CircleShape
     ) {
-        Image(
-            painter = painterResource(id = drawableRes),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
+        if (isPrimaryCenter) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(buttonSize * (100f / 116f))
+                        .clip(CircleShape)
+                        .background(Color(0xFF1B1B1B)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = drawableRes),
+                        contentDescription = null,
+                        tint = iconTint,
+                        modifier = Modifier.size(36.dp)
+                    )
+                }
+            }
+        } else {
+            Image(
+                painter = painterResource(id = drawableRes),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 

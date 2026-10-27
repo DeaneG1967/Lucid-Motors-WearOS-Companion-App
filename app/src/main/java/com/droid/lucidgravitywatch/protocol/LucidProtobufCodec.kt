@@ -361,7 +361,7 @@ object LucidProtobufCodec {
         val chargeState = ChargeState.fromProto(charging?.getInt(1) ?: 0)
         val sessionMinutesRemaining = charging?.getInt(7) ?: 0
         val chargeLimitInt = charging?.getInt(8) ?: 0
-        val chargeRateKw = charging?.getDouble(11) ?: 0.0
+        val chargeRateKw = charging?.getDouble(19) ?: 0.0
         val chargeRateMph = charging?.getDouble(12) ?: 0.0
         val chargeLimitDouble = charging?.getDouble(14) ?: 0.0
         val resolvedChargeLimit = if (chargeLimitDouble > 0.0) {
@@ -796,7 +796,7 @@ object LucidProtobufCodec {
             writeIntField(1, chargeStateCode)
             writeIntField(7, sessionMinutesRemaining)
             writeIntField(8, chargeLimitPercent.roundToInt())
-            writeDoubleField(11, chargeRateKw)
+            writeDoubleField(19, chargeRateKw)
             writeDoubleField(12, chargeRateMph)
             writeDoubleField(14, chargeLimitPercent)
         }.toByteArray()

@@ -531,6 +531,13 @@ class GravityWatchViewModel(
         }
     }
 
+    fun stopCharging() {
+        activateFastPolling()
+        executeVehicleCommand("Stopping Charge") { vehicle ->
+            repository.setChargingActive(vehicle, false)
+        }
+    }
+
     fun flashLights() {
         val current = _uiState.value.activeVehicle ?: return
         viewModelScope.launch {

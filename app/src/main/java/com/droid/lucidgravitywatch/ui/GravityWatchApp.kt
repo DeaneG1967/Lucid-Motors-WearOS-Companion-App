@@ -24,12 +24,15 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -54,13 +57,14 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.droid.lucidgravitywatch.R
+import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
@@ -103,6 +107,7 @@ fun GravityWatchApp(viewModel: GravityWatchViewModel) {
         onToggleBatteryPrecon = viewModel::toggleBatteryPreconditioning,
         onSetChargeLimit = viewModel::setChargeLimit,
         onToggleCharging = viewModel::toggleCharging,
+        onStopCharging = viewModel::stopCharging,
         onFlashLights = viewModel::flashLights,
         onHonkHorn = viewModel::honkHorn,
         onSelectVehicle = viewModel::selectVehicle,
@@ -132,6 +137,7 @@ fun GravityWatchScreen(
     onToggleBatteryPrecon: () -> Unit = {},
     onSetChargeLimit: (Int) -> Unit = {},
     onToggleCharging: () -> Unit = {},
+    onStopCharging: () -> Unit = {},
     onFlashLights: () -> Unit = {},
     onHonkHorn: () -> Unit = {},
     onSelectVehicle: (String) -> Unit = {},
@@ -144,6 +150,7 @@ fun GravityWatchScreen(
         contentAlignment = Alignment.Center
     ) {
         val isLargeDisplay = maxWidth > 320.dp && maxHeight > 320.dp
+        var selectedWatchSizeDp by rememberSaveable { mutableStateOf(227) }
 
         Column(
             modifier = Modifier
@@ -158,6 +165,8 @@ fun GravityWatchScreen(
             if (isLargeDisplay) {
                 HostCompanionTopBar(
                     uiState = uiState,
+                    selectedWatchSizeDp = selectedWatchSizeDp,
+                    onSelectWatchSizeDp = { selectedWatchSizeDp = it },
                     onToggleWatchBezelFrame = onToggleWatchBezelFrame,
                     onLogout = onLogout
                 )
@@ -166,7 +175,7 @@ fun GravityWatchScreen(
 
             val watchModifier = if (isLargeDisplay && uiState.watchBezelFrameEnabled) {
                 Modifier
-                    .size(340.dp)
+                    .size(selectedWatchSizeDp.dp)
                     .clip(CircleShape)
                     .background(StealthSurface)
                     .border(3.dp, StealthBorder, CircleShape)
@@ -197,6 +206,7 @@ fun GravityWatchScreen(
                         onToggleFrunk = onToggleFrunk,
                         onToggleLock = onToggleLock,
                         onToggleRearTrunk = onToggleRearTrunk,
+                        onStopCharging = onStopCharging,
                         onHonkHorn = onHonkHorn,
                         onFlashLights = onFlashLights,
                         onLogout = onLogout
@@ -210,6 +220,8 @@ fun GravityWatchScreen(
 @Composable
 private fun HostCompanionTopBar(
     uiState: GravityWatchUiState,
+    selectedWatchSizeDp: Int,
+    onSelectWatchSizeDp: (Int) -> Unit,
     onToggleWatchBezelFrame: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -232,13 +244,33 @@ private fun HostCompanionTopBar(
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = "LUCID CARS",
+                text = "LUCID ACCESS",
                 color = LucidPlatinum,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (uiState.watchBezelFrameEnabled) {
+                SmallChipButton(
+                    label = "Small",
+                    active = selectedWatchSizeDp == 192,
+                    onClick = { onSelectWatchSizeDp(192) },
+                    testTag = "watch_size_small_button"
+                )
+                SmallChipButton(
+                    label = "Medium",
+                    active = selectedWatchSizeDp == 213,
+                    onClick = { onSelectWatchSizeDp(213) },
+                    testTag = "watch_size_medium_button"
+                )
+                SmallChipButton(
+                    label = "Large",
+                    active = selectedWatchSizeDp == 227,
+                    onClick = { onSelectWatchSizeDp(227) },
+                    testTag = "watch_size_large_button"
+                )
+            }
             SmallChipButton(
                 label = if (uiState.watchBezelFrameEnabled) "Round Watch" else "Expanded",
                 active = uiState.watchBezelFrameEnabled,
@@ -265,28 +297,26 @@ private fun LucidWatchLoginView(
 ) {
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
+    var isPasswordStep by rememberSaveable { mutableStateOf(false) }
+    var localError by rememberSaveable { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 20.dp),
+            .padding(horizontal = 20.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "LUCID CARS",
+            text = "LUCID ACCESS",
             color = EurekaGold,
-            fontSize = 14.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.ExtraBold,
             letterSpacing = 1.6.sp
         )
-        Text(
-            text = "Wear OS Cloud Control",
-            color = LucidSilver,
-            fontSize = 11.sp
-        )
-        Spacer(modifier = Modifier.height(10.dp))
+
+        Spacer(modifier = Modifier.height(6.dp))
 
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -304,81 +334,120 @@ private fun LucidWatchLoginView(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        OutlinedTextField(
-            value = email,
-            onValueChange = { email = it },
-            label = { Text("Lucid Email", fontSize = 11.sp) },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("login_email_input")
-        )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            label = { Text("Password", fontSize = 11.sp) },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("login_password_input")
-        )
-
-        if (!uiState.errorMessage.isNullOrBlank()) {
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = uiState.errorMessage,
-                color = CrimsonAlert,
-                fontSize = 11.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.testTag("login_error_text")
-            )
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Button(
-            onClick = { onLogin(email, password, uiState.selectedRegion) },
-            enabled = !uiState.isLoading,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = EurekaGold,
-                contentColor = ObsidianBlack
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(38.dp)
-                .testTag("login_submit_button")
-        ) {
-            if (uiState.isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
-                    color = ObsidianBlack
-                )
-                Spacer(modifier = Modifier.width(6.dp))
+        if (!isPasswordStep) {
+            val acceptEmail = {
+                if (email.isBlank()) {
+                    localError = "Enter your Lucid account email"
+                } else {
+                    localError = null
+                    isPasswordStep = true
+                }
             }
-            Text("Sign In to Lucid Cloud", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-        }
+            OutlinedTextField(
+                value = email,
+                onValueChange = {
+                    if (it.contains('\n')) {
+                        email = it.replace("\n", "")
+                        acceptEmail()
+                    } else {
+                        email = it
+                        localError = null
+                    }
+                },
+                label = { Text("Lucid account email", fontSize = 11.sp) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Email,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { acceptEmail() },
+                    onNext = { acceptEmail() },
+                    onGo = { acceptEmail() }
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("login_email_input")
+            )
 
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = "Gateway: ${uiState.selectedRegion.apiHost}",
-            color = LucidSilver.copy(alpha = 0.7f),
-            fontSize = 9.sp,
-            textAlign = TextAlign.Center
-        )
+            val displayedError = localError ?: uiState.errorMessage
+            if (!displayedError.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = displayedError,
+                    color = CrimsonAlert,
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.testTag("login_error_text")
+                )
+            }
+        } else {
+            val submitPassword = {
+                if (!uiState.isLoading) {
+                    if (password.isEmpty()) {
+                        localError = "Enter your Lucid account password"
+                    } else {
+                        localError = null
+                        onLogin(email.trim(), password, uiState.selectedRegion)
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = password,
+                onValueChange = {
+                    if (it.contains('\n')) {
+                        password = it.replace("\n", "")
+                        submitPassword()
+                    } else {
+                        password = it
+                        localError = null
+                    }
+                },
+                label = { Text("Lucid account password", fontSize = 11.sp) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Email,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { submitPassword() },
+                    onGo = { submitPassword() },
+                    onNext = { submitPassword() }
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("login_password_input")
+            )
+
+            if (uiState.isLoading) {
+                Spacer(modifier = Modifier.height(6.dp))
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = EurekaGold
+                )
+            }
+
+            val displayedError = localError ?: uiState.errorMessage
+            if (!displayedError.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = displayedError,
+                    color = CrimsonAlert,
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.testTag("login_error_text")
+                )
+            }
+        }
     }
 }
 
 private enum class PendingConfirmationAction {
     FRUNK,
     LOCK,
-    TRUNK
+    TRUNK,
+    STOP_CHARGING
 }
 
 /**
@@ -400,6 +469,7 @@ private fun SimplifiedWatchDashboard(
     onToggleFrunk: () -> Unit,
     onToggleLock: () -> Unit,
     onToggleRearTrunk: () -> Unit,
+    onStopCharging: () -> Unit,
     onHonkHorn: () -> Unit,
     onFlashLights: () -> Unit,
     onLogout: () -> Unit
@@ -441,6 +511,12 @@ private fun SimplifiedWatchDashboard(
         val twentyPixelsInDp = with(LocalDensity.current) { 20f.toDp() }
         val topHeaderPadding = maxHeight * 0.05f
 
+        val batteryIconTint = when {
+            chargePercent <= 20 -> Color(0xFFFFEA00)
+            chargePercent >= 80 -> AuroraGreen
+            else -> Color.White
+        }
+
         // Top Section: Current Charge Level & Vehicle Name moved down by 5% of screen vertical height
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -456,53 +532,66 @@ private fun SimplifiedWatchDashboard(
                 Icon(
                     imageVector = if (isCharging) Icons.Default.BatteryChargingFull else Icons.Default.BatteryFull,
                     contentDescription = "Battery Charge",
-                    tint = if (isCharging) AuroraGreen else EurekaGold,
-                    modifier = Modifier.size(24.dp)
+                    tint = batteryIconTint,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .testTag("battery_status_icon")
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = "$chargePercent%",
-                    color = LucidPlatinum,
+                    color = Color.White,
                     fontSize = 28.8.sp,
                     lineHeight = 28.8.sp,
                     fontWeight = FontWeight.ExtraBold,
                     modifier = Modifier.testTag("charge_level_text")
                 )
             }
-            if (vehicle.chargeRateKw > 0.1) {
+            val showChargingPower = vehicle.chargeState.isCablePluggedIn ||
+                vehicle.chargeRateKw > 0.1 ||
+                vehicle.chargeRateKw < -0.1
+            if (showChargingPower) {
+                val powerColor = when {
+                    vehicle.chargeRateKw < -0.1 -> CryoBlue
+                    vehicle.chargeRateKw > 0.1 -> AuroraGreen
+                    else -> LucidSilver
+                }
+                val boltTint = if (vehicle.chargeState == ChargeState.EVSE_NOT_READY) {
+                    CrimsonAlert
+                } else {
+                    powerColor
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.offset(y = (-2).dp)
+                    modifier = Modifier.offset(y = 1.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Bolt,
                         contentDescription = "Charging Power",
-                        tint = AuroraGreen,
+                        tint = boltTint,
                         modifier = Modifier
-                            .size(14.dp)
+                            .size(16.8.dp)
                             .testTag("charging_bolt_icon")
                     )
                     Spacer(modifier = Modifier.width(2.dp))
                     Text(
                         text = vehicle.formatChargingPowerKw(),
-                        color = LucidSilver,
+                        color = powerColor,
                         fontSize = 12.sp,
                         lineHeight = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.testTag("vehicle_nickname_text")
+                        modifier = Modifier
+                            .offset(y = 1.dp)
+                            .clickable { pendingConfirmation = PendingConfirmationAction.STOP_CHARGING }
+                            .testTag("vehicle_nickname_text")
                     )
                 }
             } else {
-                val subtitleText = if (vehicle.chargeState.isCablePluggedIn) {
-                    "PLUGGED IN"
-                } else {
-                    vehicle.nickname.uppercase()
-                }
                 Text(
-                    text = subtitleText,
+                    text = vehicle.nickname.uppercase(),
                     color = LucidSilver,
                     fontSize = 12.sp,
                     lineHeight = 12.sp,
@@ -510,7 +599,7 @@ private fun SimplifiedWatchDashboard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
-                        .offset(y = (-2).dp)
+                        .offset(y = 2.dp)
                         .testTag("vehicle_nickname_text")
                 )
             }
@@ -524,35 +613,36 @@ private fun SimplifiedWatchDashboard(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 1. Frunk Icon Button (user's Open Frunk.webp graphic)
+            // 1. Frunk Icon Button (matches lock/unlock icon color/line weight and yellow ring when open; original when closed)
             ControlIconButton(
-                drawableRes = R.drawable.btn_open_frunk,
+                drawableRes = if (vehicle.frunkState.isOpen) R.drawable.btn_frunk_open else R.drawable.btn_open_frunk,
                 contentDesc = "Frunk Open Button",
                 isActive = vehicle.frunkState.isOpen,
                 isPrimaryCenter = false,
-                activeColor = EurekaGold,
+                activeColor = Color(0xFFFFEA00),
                 onClick = { pendingConfirmation = PendingConfirmationAction.FRUNK },
                 testTag = "overview_frunk_button"
             )
 
-            // 2. Door Lock / Unlock Icon Button (user's Doors Locked.webp graphic + unlocked state)
+            // 2. Door Lock / Unlock Icon Button (yellow ring when unlocked, blank ring when locked)
             ControlIconButton(
                 drawableRes = if (isLocked) R.drawable.btn_doors_locked else R.drawable.ic_lock_open,
                 contentDesc = if (isLocked) "Doors Locked - Tap to Unlock" else "Doors Unlocked - Tap to Lock",
-                isActive = true,
+                isActive = !isLocked,
                 isPrimaryCenter = true,
-                activeColor = if (isLocked) EurekaGold else CrimsonAlert,
+                activeColor = Color(0xFFFFEA00),
+                inactiveColor = Color.Transparent,
                 onClick = { pendingConfirmation = PendingConfirmationAction.LOCK },
                 testTag = "primary_lock_toggle_button"
             )
 
-            // 3. Trunk Icon Button (user's Open Trunk.webp graphic)
+            // 3. Trunk Icon Button (matches lock/unlock icon color/line weight and yellow ring when open; original when closed)
             ControlIconButton(
-                drawableRes = R.drawable.btn_open_trunk,
+                drawableRes = if (vehicle.rearTrunkState.isOpen) R.drawable.btn_trunk_open else R.drawable.btn_open_trunk,
                 contentDesc = "Trunk Open Button",
                 isActive = vehicle.rearTrunkState.isOpen,
                 isPrimaryCenter = false,
-                activeColor = EurekaGold,
+                activeColor = Color(0xFFFFEA00),
                 onClick = { pendingConfirmation = PendingConfirmationAction.TRUNK },
                 testTag = "overview_trunk_button"
             )
@@ -604,13 +694,14 @@ private fun SimplifiedWatchDashboard(
             )
         }
 
-        // Confirmation Pop-up Overlay for Frunk, Door Lock/Unlock, and Trunk actions
+        // Confirmation Pop-up Overlay for Frunk, Door Lock/Unlock, Trunk, and Stop Charging actions
         val activeConfirmation = pendingConfirmation
         if (activeConfirmation != null) {
             val promptText = when (activeConfirmation) {
                 PendingConfirmationAction.FRUNK -> if (vehicle.frunkState.isOpen) "Close Frunk?" else "Open Frunk?"
                 PendingConfirmationAction.LOCK -> if (isLocked) "Unlock Doors?" else "Lock Doors?"
                 PendingConfirmationAction.TRUNK -> if (vehicle.rearTrunkState.isOpen) "Close Trunk?" else "Open Trunk?"
+                PendingConfirmationAction.STOP_CHARGING -> "Stop Charging?"
             }
 
             Box(
@@ -641,48 +732,49 @@ private fun SimplifiedWatchDashboard(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                        horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
+                                .size(44.dp)
+                                .clip(CircleShape)
                                 .background(StealthSurface)
-                                .border(1.dp, StealthBorder, RoundedCornerShape(14.dp))
+                                .border(1.dp, StealthBorder, CircleShape)
                                 .clickable { pendingConfirmation = null }
-                                .padding(horizontal = 14.dp, vertical = 8.dp)
                                 .testTag("confirmation_cancel_button"),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "Cancel",
-                                color = LucidSilver,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cancel",
+                                tint = LucidPlatinum,
+                                modifier = Modifier.size(22.dp)
                             )
                         }
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
+                                .size(44.dp)
+                                .clip(CircleShape)
                                 .background(EurekaGold)
-                                .border(1.dp, EurekaGold, RoundedCornerShape(14.dp))
+                                .border(1.dp, EurekaGold, CircleShape)
                                 .clickable {
                                     pendingConfirmation = null
                                     when (activeConfirmation) {
                                         PendingConfirmationAction.FRUNK -> onToggleFrunk()
                                         PendingConfirmationAction.LOCK -> onToggleLock()
                                         PendingConfirmationAction.TRUNK -> onToggleRearTrunk()
+                                        PendingConfirmationAction.STOP_CHARGING -> onStopCharging()
                                     }
                                 }
-                                .padding(horizontal = 14.dp, vertical = 8.dp)
                                 .testTag("confirmation_confirm_button"),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "Confirm",
-                                color = ObsidianBlack,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Confirm",
+                                tint = ObsidianBlack,
+                                modifier = Modifier.size(22.dp)
                             )
                         }
                     }
@@ -699,20 +791,27 @@ private fun ControlIconButton(
     isActive: Boolean,
     isPrimaryCenter: Boolean,
     activeColor: Color,
+    inactiveColor: Color = StealthBorder,
     onClick: () -> Unit,
     testTag: String
 ) {
     val buttonSize = if (isPrimaryCenter) 62.4.dp else 55.2.dp
-    val borderColor = if (isActive) activeColor else StealthBorder
+    val borderColor = if (isActive) activeColor else inactiveColor
 
     Surface(
         modifier = Modifier
             .size(buttonSize)
             .clip(CircleShape)
-            .border(
-                width = if (isPrimaryCenter) 1.5.dp else 1.dp,
-                color = borderColor,
-                shape = CircleShape
+            .then(
+                if (borderColor != Color.Transparent) {
+                    Modifier.border(
+                        width = if (isPrimaryCenter || isActive) 2.dp else 1.dp,
+                        color = borderColor,
+                        shape = CircleShape
+                    )
+                } else {
+                    Modifier
+                }
             )
             .clickable(onClick = onClick)
             .semantics { contentDescription = contentDesc }

@@ -104,6 +104,7 @@ enum class ChargeState(val protoValue: Int, val displayName: String) {
     CHARGING_STOPPED(13, "Stopped"),
     CHARGING_PAUSED(14, "Paused"),
     DISCHARGING(19, "Discharging"),
+    EVSE_NOT_READY(25, "Plugged In"),
     CHARGING_SCHEDULED(30, "Scheduled");
 
     val isActivelyCharging: Boolean
@@ -292,10 +293,6 @@ data class GravityVehicleSnapshot(
     }
 
     fun formatChargingPowerKw(): String {
-        val rounded = java.math.BigDecimal.valueOf(chargeRateKw)
-            .round(java.math.MathContext(3, java.math.RoundingMode.HALF_UP))
-            .stripTrailingZeros()
-            .toPlainString()
-        return "$rounded kW"
+        return "${chargeRateKw.roundToInt()} kW"
     }
 }

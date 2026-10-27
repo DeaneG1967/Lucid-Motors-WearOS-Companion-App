@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -105,10 +106,21 @@ class GravityWatchAppUiTest {
             }
         }
 
-        composeTestRule.onNodeWithText("LUCID CARS").assertIsDisplayed()
+        composeTestRule.onNodeWithText("LUCID ACCESS").assertIsDisplayed()
+        // Step 1: "Lucid account email" entry box is displayed without password box underneath
+        composeTestRule.onNodeWithTag("login_email_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_password_input").assertDoesNotExist()
+
         composeTestRule.onNodeWithTag("login_email_input").performTextInput("pilot@lucidmotors.com")
+        composeTestRule.onNodeWithTag("login_email_input").performImeAction()
+
+        // Step 2: "Lucid account email" entry box is replaced by "Lucid account password" entry box
+        composeTestRule.onNodeWithTag("login_email_input").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("login_password_input").assertIsDisplayed()
+
         composeTestRule.onNodeWithTag("login_password_input").performTextInput("Gravity2026!")
-        composeTestRule.onNodeWithTag("login_submit_button").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("Gravity2026!").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_password_input").performImeAction()
 
         assertEquals("pilot@lucidmotors.com", submittedEmail)
         assertEquals("Gravity2026!", submittedPassword)
@@ -120,6 +132,7 @@ class GravityWatchAppUiTest {
         var frunkClicked = false
         var lockClicked = false
         var trunkClicked = false
+        var stopChargingClicked = false
         var hornClicked = false
         var lightsClicked = false
         val currentVehicle = mutableStateOf(sampleGravity)
@@ -140,33 +153,64 @@ class GravityWatchAppUiTest {
                         currentVehicle.value = currentVehicle.value.copy(lockState = LockState.UNLOCKED)
                     },
                     onToggleRearTrunk = { trunkClicked = true },
+                    onStopCharging = { stopChargingClicked = true },
                     onHonkHorn = { hornClicked = true },
                     onFlashLights = { lightsClicked = true }
                 )
             }
         }
 
-        // Verify charge level at top; sampleGravity has chargeRateKw = 19.2 (> 0.1kW)
+        // Verify charge level at top; sampleGravity has chargeRateKw = 19.2 (> 0.1kW) -> nearest kW "19 kW"
         composeTestRule.onNodeWithTag("charge_level_text").assertIsDisplayed()
         composeTestRule.onNodeWithText("84%").assertIsDisplayed()
         composeTestRule.onNodeWithTag("charging_bolt_icon").assertIsDisplayed()
-        composeTestRule.onNodeWithText("19.2 kW").assertIsDisplayed()
+        composeTestRule.onNodeWithText("19 kW").assertIsDisplayed()
 
-        // When plugged in with charging power < 0.1kW -> shows "PLUGGED IN"
+        // Tapping charging power text opens "Stop Charging?" confirmation dialog
+        composeTestRule.onNodeWithText("19 kW").performClick()
+        org.junit.Assert.assertFalse(stopChargingClicked)
+        composeTestRule.onNodeWithText("Stop Charging?").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
+        org.junit.Assert.assertFalse(stopChargingClicked)
+        composeTestRule.onNodeWithText("19 kW").performClick()
+        composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
+        assertTrue(stopChargingClicked)
+
+        // When plugged in with charging power between -0.1kW and 0.1kW -> shows lightning bolt + "0 kW"
         currentVehicle.value = currentVehicle.value.copy(
             chargeState = ChargeState.CABLE_CONNECTED,
             chargeRateKw = 0.05
         )
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("charging_bolt_icon").assertDoesNotExist()
-        composeTestRule.onNodeWithText("PLUGGED IN").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("charging_bolt_icon").assertIsDisplayed()
+        composeTestRule.onNodeWithText("0 kW").assertIsDisplayed()
 
-        // When unplugged and charging power < 0.1kW -> shows vehicle nickname
+        // When API returns EVSE_NOT_READY (proto 25) -> treated same as CABLE_CONNECTED with red lightning bolt + "0 kW"
+        assertEquals(ChargeState.EVSE_NOT_READY, ChargeState.fromProto(25))
+        currentVehicle.value = currentVehicle.value.copy(
+            chargeState = ChargeState.fromProto(25),
+            chargeRateKw = 0.0
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("charging_bolt_icon").assertIsDisplayed()
+        composeTestRule.onNodeWithText("0 kW").assertIsDisplayed()
+
+        // When RangeXChange discharging (< -0.1kW) -> shows lightning bolt + "-9 kW"
+        currentVehicle.value = currentVehicle.value.copy(
+            chargeState = ChargeState.DISCHARGING,
+            chargeRateKw = -9.4
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("charging_bolt_icon").assertIsDisplayed()
+        composeTestRule.onNodeWithText("-9 kW").assertIsDisplayed()
+
+        // When unplugged and charging power within [-0.1, 0.1] -> shows vehicle nickname
         currentVehicle.value = currentVehicle.value.copy(
             chargeState = ChargeState.NOT_CONNECTED,
             chargeRateKw = 0.0
         )
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("charging_bolt_icon").assertDoesNotExist()
         composeTestRule.onNodeWithText("GRAVITY GT").assertIsDisplayed()
 
         // Verify Locked state initially shown on Door Lock/Unlock button
@@ -176,10 +220,14 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
         org.junit.Assert.assertFalse(frunkClicked)
         composeTestRule.onNodeWithText("Open Frunk?").assertIsDisplayed()
-        // Cancel does not send command
+        composeTestRule.onNodeWithContentDescription("Cancel").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("Confirm").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Cancel").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Confirm").assertDoesNotExist()
+        // Cancel (X icon button) does not send command
         composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
         org.junit.Assert.assertFalse(frunkClicked)
-        // Confirm sends command
+        // Confirm (Checkmark icon button) sends command
         composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
         composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
         assertTrue(frunkClicked)

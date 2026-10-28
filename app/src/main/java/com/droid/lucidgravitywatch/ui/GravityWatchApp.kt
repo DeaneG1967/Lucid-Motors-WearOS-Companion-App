@@ -1,5 +1,13 @@
 package com.droid.lucidgravitywatch.ui
 
+import android.app.Activity
+import android.app.RemoteInput
+import android.view.inputmethod.EditorInfo
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.wear.input.RemoteInputIntentHelper
+import androidx.wear.input.wearableExtender
+
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,8 +32,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
@@ -38,7 +44,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -57,8 +62,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -343,31 +346,18 @@ private fun LucidWatchLoginView(
                     isPasswordStep = true
                 }
             }
-            OutlinedTextField(
+            // Wear keyboards run full-screen; a phone-style TextField loses sync with them,
+            // so text entry goes through the system RemoteInput activity instead.
+            WatchTextEntryField(
+                label = "Lucid account email",
                 value = email,
-                onValueChange = {
-                    if (it.contains('\n')) {
-                        email = it.replace("\n", "")
-                        acceptEmail()
-                    } else {
-                        email = it
-                        localError = null
-                    }
-                },
-                label = { Text("Lucid account email", fontSize = 11.sp) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Email,
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                    onDone = { acceptEmail() },
-                    onNext = { acceptEmail() },
-                    onGo = { acceptEmail() }
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("login_email_input")
+                inputKey = LOGIN_EMAIL_INPUT_KEY,
+                masked = false,
+                testTag = "login_email_input",
+                onValueEntered = {
+                    email = it.trim()
+                    acceptEmail()
+                }
             )
 
             val displayedError = localError ?: uiState.errorMessage
@@ -392,31 +382,30 @@ private fun LucidWatchLoginView(
                     }
                 }
             }
-            OutlinedTextField(
-                value = password,
-                onValueChange = {
-                    if (it.contains('\n')) {
-                        password = it.replace("\n", "")
-                        submitPassword()
-                    } else {
-                        password = it
-                        localError = null
-                    }
-                },
-                label = { Text("Lucid account password", fontSize = 11.sp) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Email,
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                    onDone = { submitPassword() },
-                    onGo = { submitPassword() },
-                    onNext = { submitPassword() }
-                ),
+            Text(
+                text = email,
+                color = LucidSilver,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("login_password_input")
+                    .clickable {
+                        localError = null
+                        isPasswordStep = false
+                    }
+                    .padding(bottom = 4.dp)
+                    .testTag("login_email_summary")
+            )
+            WatchTextEntryField(
+                label = "Lucid account password",
+                value = password,
+                inputKey = LOGIN_PASSWORD_INPUT_KEY,
+                masked = true,
+                testTag = "login_password_input",
+                onValueEntered = {
+                    password = it.replace("\n", "")
+                    submitPassword()
+                }
             )
 
             if (uiState.isLoading) {
@@ -440,6 +429,65 @@ private fun LucidWatchLoginView(
                 )
             }
         }
+    }
+}
+
+internal const val LOGIN_EMAIL_INPUT_KEY = "lucid_login_email"
+internal const val LOGIN_PASSWORD_INPUT_KEY = "lucid_login_password"
+
+@Composable
+private fun WatchTextEntryField(
+    label: String,
+    value: String,
+    inputKey: String,
+    masked: Boolean,
+    testTag: String,
+    onValueEntered: (String) -> Unit
+) {
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val entered = result.data
+            ?.let { RemoteInput.getResultsFromIntent(it) }
+            ?.getCharSequence(inputKey)
+            ?.toString()
+        if (result.resultCode == Activity.RESULT_OK && entered != null) {
+            onValueEntered(entered)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .border(1.dp, StealthBorder, RoundedCornerShape(12.dp))
+            .clickable {
+                val remoteInput = RemoteInput.Builder(inputKey)
+                    .setLabel(label)
+                    .wearableExtender {
+                        setEmojisAllowed(false)
+                        setInputActionType(EditorInfo.IME_ACTION_DONE)
+                    }
+                    .build()
+                val intent = RemoteInputIntentHelper.createActionRemoteInputIntent()
+                RemoteInputIntentHelper.putRemoteInputsExtra(intent, listOf(remoteInput))
+                launcher.launch(intent)
+            }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .testTag(testTag)
+    ) {
+        Text(text = label, color = LucidSilver, fontSize = 10.sp)
+        Text(
+            text = when {
+                value.isEmpty() -> "Tap to enter"
+                masked -> "•".repeat(value.length)
+                else -> value
+            },
+            color = if (value.isEmpty()) LucidSilver else LucidPlatinum,
+            fontSize = 13.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

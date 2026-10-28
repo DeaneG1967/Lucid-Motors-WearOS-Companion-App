@@ -1,16 +1,19 @@
 package com.droid.lucidgravitywatch.ui
 
+import android.app.Activity
 import android.app.Application
+import android.app.RemoteInput
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.droid.lucidgravitywatch.model.BatteryPreconStatus
 import com.droid.lucidgravitywatch.model.ChargeState
@@ -32,6 +35,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(AndroidJUnit4::class)
@@ -39,7 +43,22 @@ import org.robolectric.annotation.Config
 class GravityWatchAppUiTest {
 
     @get:Rule
-    val composeTestRule = createComposeRule()
+    val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    // Simulates the system Wear keyboard returning text to the RemoteInput launcher.
+    private fun enterRemoteInput(fieldTag: String, inputKey: String, text: String) {
+        composeTestRule.onNodeWithTag(fieldTag).performClick()
+        val shadowActivity = shadowOf(composeTestRule.activity)
+        val started = shadowActivity.nextStartedActivityForResult
+        val results = Intent()
+        RemoteInput.addResultsToIntent(
+            arrayOf(RemoteInput.Builder(inputKey).build()),
+            results,
+            Bundle().apply { putCharSequence(inputKey, text) }
+        )
+        shadowActivity.receiveResult(started.intent, Activity.RESULT_OK, results)
+        composeTestRule.waitForIdle()
+    }
 
     private val sampleGravity = GravityVehicleSnapshot(
         vehicleId = "veh-gravity-gt",
@@ -111,16 +130,15 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithTag("login_email_input").assertIsDisplayed()
         composeTestRule.onNodeWithTag("login_password_input").assertDoesNotExist()
 
-        composeTestRule.onNodeWithTag("login_email_input").performTextInput("pilot@lucidmotors.com")
-        composeTestRule.onNodeWithTag("login_email_input").performImeAction()
+        enterRemoteInput("login_email_input", LOGIN_EMAIL_INPUT_KEY, "pilot@lucidmotors.com")
 
         // Step 2: "Lucid account email" entry box is replaced by "Lucid account password" entry box
         composeTestRule.onNodeWithTag("login_email_input").assertDoesNotExist()
         composeTestRule.onNodeWithTag("login_password_input").assertIsDisplayed()
 
-        composeTestRule.onNodeWithTag("login_password_input").performTextInput("Gravity2026!")
-        composeTestRule.onNodeWithText("Gravity2026!").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("login_password_input").performImeAction()
+        composeTestRule.onNodeWithText("pilot@lucidmotors.com").assertIsDisplayed()
+        enterRemoteInput("login_password_input", LOGIN_PASSWORD_INPUT_KEY, "Gravity2026!")
+        composeTestRule.onNodeWithText("Gravity2026!").assertDoesNotExist()
 
         assertEquals("pilot@lucidmotors.com", submittedEmail)
         assertEquals("Gravity2026!", submittedPassword)

@@ -144,6 +144,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.wear.compose.material)
     implementation(libs.androidx.wear.compose.foundation)
+    implementation(libs.androidx.wear.input)
 
     // HTTP/2 gRPC Transport for Lucid Cloud API
     implementation(libs.okhttp)

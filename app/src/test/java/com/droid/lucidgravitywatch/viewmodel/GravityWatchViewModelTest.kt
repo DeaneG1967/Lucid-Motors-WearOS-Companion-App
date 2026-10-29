@@ -50,6 +50,10 @@ class GravityWatchViewModelTest {
         var fetchStateCount: Int = 0
         /** Thrown by the next fetchVehicleState call, then cleared. */
         var nextStateFetchError: Throwable? = null
+        /** When > 0, each fetchVehicleState call returns a report this much newer (an online car). */
+        var advanceReportOnStateFetchMs: Long = 0L
+        /** When true, WakeupVehicle is accepted but the car's state does not change. */
+        var wakeHasNoEffect: Boolean = false
         var wakeCount: Int = 0
         var frunkCommandCount: Int = 0
         var deferCloudStateUpdateOnCommand: Boolean = false
@@ -144,13 +148,18 @@ class GravityWatchViewModelTest {
                 throw it
             }
             if (shouldFailRequests) throw IllegalStateException("Fetch failed")
+            if (advanceReportOnStateFetchMs > 0L) {
+                snapshot = snapshot.copy(lastUpdatedMs = snapshot.lastUpdatedMs + advanceReportOnStateFetchMs)
+            }
             return (listOf(snapshot) + extraVehicles).first { it.vehicleId == vehicle.vehicleId }
         }
 
         override suspend fun wakeVehicle(vehicle: GravityVehicleSnapshot): GravityVehicleSnapshot {
             if (shouldFailRequests) throw IllegalStateException("Wake failed")
             wakeCount++
-            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1)
+            if (!wakeHasNoEffect) {
+                snapshot = snapshot.copy(powerState = PowerState.CLOUD_1)
+            }
             return snapshot
         }
 
@@ -495,6 +504,190 @@ class GravityWatchViewModelTest {
         viewModel.selectVehicle("veh-gravity-01")
         assertEquals("veh-gravity-01", repo.currentSelectedVehicleId)
         assertFalse(viewModel.uiState.value.areControlsLocked)
+    }
+
+    @Test
+    fun chargingCar_inSleepCharge_withAdvancingReports_isReachable_andNotWokenRepeatedly() = runTest {
+        // Seen live on a Gravity: SLEEP_CHARGE throughout, but a new report every 1-3 seconds
+        val repo = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(powerState = PowerState.SLEEP_CHARGE, chargeState = ChargeState.EVSE_NOT_READY)
+            advanceReportOnStateFetchMs = 1_500L
+            wakeHasNoEffect = true
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo) { testScheduler.currentTime }
+            .create(GravityWatchViewModel::class.java)
+        try {
+            viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+            runCurrent()
+
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            // First poll only sets the baseline report time -> one wake request, still frozen
+            assertEquals(1, repo.wakeCount)
+            assertEquals("Waking car…", viewModel.uiState.value.controlsLockedReason)
+
+            // One new report is not enough...
+            advanceTimeBy(1_000L)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.areControlsLocked)
+
+            // ...two new reports 1.5 s apart make the car reachable while it still says SLEEP_CHARGE
+            advanceTimeBy(1_000L)
+            runCurrent()
+            assertEquals(PowerState.SLEEP_CHARGE, viewModel.uiState.value.activeVehicle?.powerState)
+            assertTrue(viewModel.uiState.value.hasLiveReports)
+            assertFalse(viewModel.uiState.value.areControlsLocked)
+            assertFalse(viewModel.uiState.value.isWakingVehicle)
+            assertEquals(GravityWatchViewModel.IDLE_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+
+            // While the reports keep coming, no further wake requests are sent
+            advanceTimeBy(90_000L)
+            runCurrent()
+            assertEquals(1, repo.wakeCount)
+            assertFalse(viewModel.uiState.value.areControlsLocked)
+
+            // If the car stops reporting, it is no longer treated as reachable and is woken again
+            repo.advanceReportOnStateFetchMs = 0L
+            advanceTimeBy(GravityWatchViewModel.LIVE_REPORT_STALE_AFTER_MS + 3_000L)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.hasLiveReports)
+            assertEquals("Waking car…", viewModel.uiState.value.controlsLockedReason)
+            assertEquals(2, repo.wakeCount)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
+    @Test
+    fun sleepingCar_occasionalCheckIns_doNotCountAsLiveReports() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            wakeHasNoEffect = true // stays in SLEEP
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo) { testScheduler.currentTime }
+            .create(GravityWatchViewModel::class.java)
+        try {
+            viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+            runCurrent()
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            advanceTimeBy(20_000L)
+            runCurrent()
+            assertEquals("Waking car…", viewModel.uiState.value.controlsLockedReason)
+
+            // A single check-in moves the report time once -> still not reachable
+            repo.snapshot = repo.snapshot.copy(lastUpdatedMs = repo.snapshot.lastUpdatedMs + 150_000L)
+            advanceTimeBy(5_000L)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.hasLiveReports)
+            assertTrue(viewModel.uiState.value.areControlsLocked)
+
+            // The next check-in minutes later is too far apart to count either
+            repo.snapshot = repo.snapshot.copy(lastUpdatedMs = repo.snapshot.lastUpdatedMs + 150_000L)
+            advanceTimeBy(5_000L)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.hasLiveReports)
+            assertEquals("Waking car…", viewModel.uiState.value.controlsLockedReason)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
+    @Test
+    fun undocumentedAndUnknownPowerStates_doNotLeaveTheWatchWaiting() = runTest {
+        // State 13 (seen on a Gravity) is treated as awake without needing reports
+        val gravity = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(powerState = PowerState.UNDOCUMENTED_13, powerStateCode = 13)
+        }
+        val gravityVm = GravityWatchViewModel.Factory(gravity) { testScheduler.currentTime }
+            .create(GravityWatchViewModel::class.java)
+        try {
+            gravityVm.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+            gravityVm.setInteractivePowerState(true)
+            runCurrent()
+            assertFalse(gravityVm.uiState.value.areControlsLocked)
+            assertEquals(0, gravity.wakeCount)
+        } finally {
+            gravityVm.suspendPolling()
+        }
+
+        // An unrecognised value becomes UNKNOWN; live reports still make the car reachable
+        val unknown = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(powerState = PowerState.UNKNOWN, powerStateCode = 42)
+            advanceReportOnStateFetchMs = 2_000L
+            wakeHasNoEffect = true
+        }
+        val unknownVm = GravityWatchViewModel.Factory(unknown) { testScheduler.currentTime }
+            .create(GravityWatchViewModel::class.java)
+        try {
+            unknownVm.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+            unknownVm.setInteractivePowerState(true)
+            runCurrent()
+            advanceTimeBy(3_000L) // baseline poll + two new reports
+            runCurrent()
+            assertFalse(unknownVm.uiState.value.areControlsLocked)
+            assertEquals(42, unknownVm.uiState.value.activeVehicle?.powerStateCode)
+        } finally {
+            unknownVm.suspendPolling()
+        }
+    }
+
+    @Test
+    fun singleVehicle_withNoSavedChoice_isUsedAutomatically() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            currentSelectedVehicleId = null
+            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1)
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        try {
+            viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+            runCurrent()
+
+            assertFalse(viewModel.uiState.value.needsVehicleSelection)
+            assertEquals("veh-gravity-01", viewModel.uiState.value.activeVehicle?.vehicleId)
+            assertFalse(viewModel.uiState.value.areControlsLocked)
+
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            assertEquals(1, repo.fetchStateCount) // polls the single car directly
+            viewModel.honkHorn()
+            runCurrent()
+            assertEquals(1, repo.honkedHornCount)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
+    @Test
+    fun restoredSession_fetchesVehicleListOnce_beforePollingTheCar() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1)
+        }
+        repo.login("owner@lucidmotors.com", "password123", LucidRegion.US) // saved session
+        val listGate = CompletableDeferred<Unit>()
+        repo.fetchGate = listGate
+
+        // App start: restoring the session starts the vehicle-list fetch...
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        // ...and becoming interactive must not start a second one while it is in flight
+        try {
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            assertEquals(1, repo.fetchVehiclesCount)
+
+            repo.fetchGate = null
+            listGate.complete(Unit)
+            runCurrent()
+            assertEquals(1, repo.fetchVehiclesCount)
+            assertNotNull(viewModel.uiState.value.activeVehicle)
+
+            // Later polls use the per-car state call
+            advanceTimeBy(GravityWatchViewModel.IDLE_POLL_INTERVAL_MS)
+            runCurrent()
+            assertEquals(1, repo.fetchVehiclesCount)
+            assertTrue(repo.fetchStateCount >= 1)
+        } finally {
+            viewModel.suspendPolling()
+        }
     }
 
     @Test

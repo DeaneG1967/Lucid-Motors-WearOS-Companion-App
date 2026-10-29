@@ -315,6 +315,7 @@ class LucidProtobufCodecTest {
         }.toByteArray()
         val partial = LucidProtobufCodec.decodeGetVehicleStateResponse(partialResponse, decoded)
         assertEquals(PowerState.MONITOR, partial.powerState)
+        assertEquals(11, partial.powerStateCode)
         assertEquals(LockState.LOCKED, partial.lockState)
         assertEquals(66.0, partial.batteryPercent, 0.01)
         assertEquals(decoded.lastUpdatedMs, partial.lastUpdatedMs)
@@ -340,5 +341,13 @@ class LucidProtobufCodecTest {
         assertEquals(66.0, placeholder.batteryPercent, 0.01)
         assertEquals(decoded.batteryKwh, placeholder.batteryKwh, 0.01)
         assertEquals(PowerState.SLEEP, placeholder.powerState)
+
+        // An unrecognised power state decodes as UNKNOWN but keeps its raw number for logging
+        val unknownPower = LucidProtobufCodec.decodeGetVehicleStateResponse(
+            LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(vehicleId = "v-1", powerCode = 42),
+            decoded
+        )
+        assertEquals(PowerState.UNKNOWN, unknownPower.powerState)
+        assertEquals(42, unknownPower.powerStateCode)
     }
 }

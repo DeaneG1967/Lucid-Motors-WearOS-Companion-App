@@ -346,7 +346,7 @@ object LucidProtobufCodec {
         fun missing(fieldNumber: Int) = state.bytesList[fieldNumber].isNullOrEmpty()
         var merged = this
         if (state.varints[2].isNullOrEmpty()) {
-            merged = merged.copy(powerState = previous.powerState)
+            merged = merged.copy(powerState = previous.powerState, powerStateCode = previous.powerStateCode)
         }
         // While the car's battery management is still booting after a wake, the battery block
         // carries placeholder values (255% charge, 655 kWh) rather than being omitted.
@@ -442,7 +442,8 @@ object LucidProtobufCodec {
         paintColorName: String
     ): GravityVehicleSnapshot {
         val battery = state?.getSubMessage(1)
-        val powerState = PowerState.fromProto(state?.getInt(2) ?: 0)
+        val powerStateCode = state?.getInt(2) ?: 0
+        val powerState = PowerState.fromProto(powerStateCode)
         val cabin = state?.getSubMessage(3)
         val body = state?.getSubMessage(4)
         val lastUpdatedMs = state?.getVarint(5) ?: 0L
@@ -508,6 +509,7 @@ object LucidProtobufCodec {
             variantName = variantName,
             paintColorName = paintColorName,
             powerState = powerState,
+            powerStateCode = powerStateCode,
             lockState = lockState,
             walkawayState = walkawayState,
             frunkState = frunkState,

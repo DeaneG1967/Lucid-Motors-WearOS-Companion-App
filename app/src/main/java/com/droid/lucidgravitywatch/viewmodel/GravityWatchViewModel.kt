@@ -1,5 +1,6 @@
 package com.droid.lucidgravitywatch.viewmodel
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -25,6 +26,9 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class WatchDialPage(val title: String) {
     OVERVIEW_LOCK("Security"),
@@ -60,7 +64,12 @@ data class GravityWatchUiState(
     /** True while the user has opened the vehicle selector to swap cars. */
     val isSelectingVehicle: Boolean = false,
     /** True after Lucid Cloud rejected a call as rate-limited, until the next successful fetch. */
-    val isRateLimited: Boolean = false
+    val isRateLimited: Boolean = false,
+    /**
+     * True while the active car keeps sending new reports (see GravityWatchViewModel's report
+     * tracking). A charging car stays online in SLEEP_CHARGE without ever reporting an awake state.
+     */
+    val hasLiveReports: Boolean = false
 ) {
     /**
      * The vehicle being controlled: the user's saved choice, or the only vehicle on the account.
@@ -77,6 +86,10 @@ data class GravityWatchUiState(
     val needsVehicleSelection: Boolean
         get() = isAuthenticated && hasMultipleVehicles && (isSelectingVehicle || activeVehicle == null)
 
+    /** The active car reports an awake state, or is evidently online because its reports keep arriving. */
+    val isVehicleReachable: Boolean
+        get() = activeVehicle?.powerState?.isAwake == true || hasLiveReports
+
     /** Why vehicle controls are frozen, or null when the car is awake and its status is known. */
     val controlsLockedReason: String?
         get() {
@@ -85,7 +98,7 @@ data class GravityWatchUiState(
                 awaitingVehicleStateLabel != null -> "$awaitingVehicleStateLabel…"
                 isCommandPending -> "Sending command…"
                 !hasFreshTelemetry -> "Reading car status…"
-                !vehicle.powerState.isAwake -> if (isWakingVehicle) "Waking car…" else "Car asleep"
+                !isVehicleReachable -> if (isWakingVehicle) "Waking car…" else "Car asleep"
                 else -> null
             }
         }
@@ -95,7 +108,9 @@ data class GravityWatchUiState(
 }
 
 class GravityWatchViewModel(
-    private val repository: LucidVehicleRepository
+    private val repository: LucidVehicleRepository,
+    /** Monotonic watch time; only ever compared with itself, never with Lucid's report times. */
+    private val elapsedRealtimeMs: () -> Long = { SystemClock.elapsedRealtime() }
 ) : ViewModel() {
 
     companion object {
@@ -111,6 +126,14 @@ class GravityWatchViewModel(
         const val RATE_LIMIT_BACKOFF_MS = 60_000L
         const val STATE_CONFIRMATION_TIMEOUT_MS = 45_000L
         const val WAKE_RETRY_INTERVAL_MS = 30_000L
+        /**
+         * A car counts as online when two consecutive new reports are at most this far apart in
+         * Lucid's server clock. Awake and charging cars report every 1-3 s; a sleeping car's report
+         * time stayed frozen for 78 s of polling, so one check-in alone never qualifies.
+         */
+        const val LIVE_REPORT_MAX_SPACING_MS = 10_000L
+        /** Live status lapses when no new report has arrived for this long (watch time). */
+        const val LIVE_REPORT_STALE_AFTER_MS = 30_000L
         private const val GRPC_RESOURCE_EXHAUSTED = 8
         private const val TAG = "LucidVM"
     }
@@ -127,6 +150,14 @@ class GravityWatchViewModel(
     private var expectedFrunkOpen: Boolean? = null
     private var expectedRearTrunkOpen: Boolean? = null
     private var awaitingPostCommandPoll: Boolean = false
+    private var vehicleListJob: Job? = null
+
+    // Report tracking for the active car: report times are Lucid's server clock, so they are only
+    // compared with each other; staleness is measured with the watch's monotonic clock.
+    private var trackedVehicleId: String? = null
+    private var latestReportMs: Long? = null
+    private val newReportTimesMs = ArrayDeque<Long>()
+    private var lastNewReportElapsedMs: Long = 0L
 
     init {
         restoreExistingSession()
@@ -270,6 +301,13 @@ class GravityWatchViewModel(
 
     private suspend fun performInteractivePoll() {
         if (!isPollingPowerStateActive() || !_uiState.value.isAuthenticated) return
+        // At startup no car is known until the vehicle list arrives; polling now would fetch the
+        // list a second time (GetUserVehicles allows ~5 calls per minute), so wait for it instead.
+        val pendingList = vehicleListJob
+        if (_uiState.value.activeVehicle == null && pendingList?.isActive == true) {
+            pendingList.join()
+            return
+        }
 
         val showYellowDot = _uiState.value.isInteractive
         _uiState.update { it.copy(isPolling = showYellowDot) }
@@ -302,6 +340,8 @@ class GravityWatchViewModel(
             if (polledVehicle != null) {
                 reconcileExpectedChanges(polledVehicle)
             }
+            val liveReports = polledVehicle?.let { observeReport(it) } ?: false
+            val reachable = polledVehicle?.powerState?.isAwake == true || liveReports
 
             _uiState.update {
                 it.copy(
@@ -310,7 +350,8 @@ class GravityWatchViewModel(
                     vehicles = vehicles,
                     selectedVehicleId = selectedId,
                     hasFreshTelemetry = true,
-                    isWakingVehicle = it.isWakingVehicle && polledVehicle?.powerState?.isAwake != true,
+                    hasLiveReports = liveReports,
+                    isWakingVehicle = it.isWakingVehicle && !reachable,
                     isRateLimited = false,
                     statusBanner = "Telemetry synced",
                     errorMessage = null
@@ -373,6 +414,51 @@ class GravityWatchViewModel(
             ?: vehicles.singleOrNull()?.vehicleId
     }
 
+    /**
+     * Records [vehicle]'s report time and returns whether the car is live: its last two new reports
+     * were at most [LIVE_REPORT_MAX_SPACING_MS] apart and the newest arrived within
+     * [LIVE_REPORT_STALE_AFTER_MS] of watch time.
+     */
+    private fun observeReport(vehicle: GravityVehicleSnapshot): Boolean {
+        if (vehicle.vehicleId != trackedVehicleId) {
+            resetReportTracking()
+            trackedVehicleId = vehicle.vehicleId
+        }
+        val wasLive = _uiState.value.hasLiveReports
+        val reportMs = vehicle.lastUpdatedMs
+        val previousMs = latestReportMs
+        if (previousMs == null || reportMs > previousMs) {
+            if (previousMs != null) {
+                newReportTimesMs.addLast(reportMs)
+                while (newReportTimesMs.size > 2) newReportTimesMs.removeFirst()
+                lastNewReportElapsedMs = elapsedRealtimeMs()
+            }
+            latestReportMs = reportMs
+        }
+        val live = newReportTimesMs.size == 2 &&
+            newReportTimesMs.last() - newReportTimesMs.first() <= LIVE_REPORT_MAX_SPACING_MS &&
+            elapsedRealtimeMs() - lastNewReportElapsedMs <= LIVE_REPORT_STALE_AFTER_MS
+        if (live != wasLive && !vehicle.powerState.isAwake) {
+            Log.i(
+                TAG,
+                if (live) {
+                    "${vehicle.nickname} is ${vehicle.powerState.name}(${vehicle.powerStateCode}) but reporting " +
+                        "every ${(newReportTimesMs.last() - newReportTimesMs.first()) / 1000.0}s; treating as reachable"
+                } else {
+                    "${vehicle.nickname} stopped sending new reports; no longer treated as reachable"
+                }
+            )
+        }
+        return live
+    }
+
+    private fun resetReportTracking() {
+        trackedVehicleId = null
+        latestReportMs = null
+        newReportTimesMs.clear()
+        lastNewReportElapsedMs = 0L
+    }
+
     private fun reconcileExpectedChanges(polledVehicle: GravityVehicleSnapshot) {
         if (expectedLockState != null && polledVehicle.lockState == expectedLockState) {
             Log.i(TAG, "Confirmed by car: doors ${polledVehicle.lockState.displayName}")
@@ -402,7 +488,7 @@ class GravityWatchViewModel(
     }
 
     private fun wakeIfAsleep(vehicle: GravityVehicleSnapshot) {
-        if (vehicle.powerState.isAwake) return
+        if (vehicle.powerState.isAwake || _uiState.value.hasLiveReports) return
         if (!_uiState.value.isInteractive) {
             Log.d(TAG, "Car is ${vehicle.powerState.displayName}; not waking while watch is not interactive")
             return
@@ -521,7 +607,7 @@ class GravityWatchViewModel(
     }
 
     fun refreshVehicles() {
-        viewModelScope.launch {
+        vehicleListJob = viewModelScope.launch {
             val showInteractiveDot = _uiState.value.isInteractive
             _uiState.update {
                 it.copy(
@@ -557,7 +643,10 @@ class GravityWatchViewModel(
             wakeJob = null
             clearExpectedChanges()
             awaitingPostCommandPoll = false
-            _uiState.update { it.copy(isWakingVehicle = false, awaitingVehicleStateLabel = null) }
+            resetReportTracking()
+            _uiState.update {
+                it.copy(isWakingVehicle = false, awaitingVehicleStateLabel = null, hasLiveReports = false)
+            }
         }
         _uiState.update {
             it.copy(selectedVehicleId = vehicleId, isSelectingVehicle = false, errorMessage = null)
@@ -834,6 +923,7 @@ class GravityWatchViewModel(
         rateLimitBackoffJob?.cancel()
         clearExpectedChanges()
         awaitingPostCommandPoll = false
+        resetReportTracking()
         repository.logout()
         _uiState.value = GravityWatchUiState(
             isInteractive = _uiState.value.isInteractive,
@@ -842,14 +932,21 @@ class GravityWatchViewModel(
     }
 
     private fun GravityVehicleSnapshot.describeState(): String =
-        "$nickname [$model] power=${powerState.name} lock=${lockState.name} " +
+        "$nickname [$model] power=${powerState.name}($powerStateCode) lock=${lockState.name} " +
             "frunk=${frunkState.name} trunk=${rearTrunkState.name} charge=${chargeState.name} " +
-            "battery=${batteryPercent.toInt()}%"
+            "battery=${batteryPercent.toInt()}% reported=${formatReportTime(lastUpdatedMs)}"
 
-    class Factory(private val repository: LucidVehicleRepository) : ViewModelProvider.Factory {
+    /** Lucid's report time (server clock) as wall-clock time in the watch's time zone. */
+    private fun formatReportTime(epochMs: Long): String =
+        if (epochMs <= 0L) "?" else SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(epochMs))
+
+    class Factory(
+        private val repository: LucidVehicleRepository,
+        private val elapsedRealtimeMs: () -> Long = { SystemClock.elapsedRealtime() }
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return GravityWatchViewModel(repository) as T
+            return GravityWatchViewModel(repository, elapsedRealtimeMs) as T
         }
     }
 }

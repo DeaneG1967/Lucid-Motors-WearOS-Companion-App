@@ -83,6 +83,10 @@ enum class PowerState(val protoValue: Int, val displayName: String) {
     val isSleeping: Boolean
         get() = this == SLEEP || this == DROWSY || this == SLEEP_PENDING
 
+    /** True when the car is known to be awake enough to act on remote commands. */
+    val isAwake: Boolean
+        get() = !isSleeping && this != UNKNOWN && this != SLEEP_CHARGE && this != SLEEP_UPDATE
+
     companion object {
         fun fromProto(value: Int): PowerState =
             entries.firstOrNull { it.protoValue == value } ?: UNKNOWN

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -44,11 +45,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
@@ -112,6 +115,8 @@ fun GravityWatchApp(viewModel: GravityWatchViewModel) {
         onFlashLights = viewModel::flashLights,
         onHonkHorn = viewModel::honkHorn,
         onSelectVehicle = viewModel::selectVehicle,
+        onOpenVehicleSelector = viewModel::openVehicleSelector,
+        onCancelVehicleSelection = viewModel::cancelVehicleSelection,
         onLogout = viewModel::logout
     )
 }
@@ -142,6 +147,8 @@ fun GravityWatchScreen(
     onFlashLights: () -> Unit = {},
     onHonkHorn: () -> Unit = {},
     onSelectVehicle: (String) -> Unit = {},
+    onOpenVehicleSelector: () -> Unit = {},
+    onCancelVehicleSelection: () -> Unit = {},
     onLogout: () -> Unit = {}
 ) {
     BoxWithConstraints(
@@ -199,11 +206,18 @@ fun GravityWatchScreen(
                         onSelectRegion = onSelectRegion,
                         onLogin = onLogin
                     )
+                } else if (uiState.needsVehicleSelection) {
+                    VehicleSelectorView(
+                        uiState = uiState,
+                        onSelectVehicle = onSelectVehicle,
+                        onCancel = onCancelVehicleSelection
+                    )
                 } else {
                     SimplifiedWatchDashboard(
                         uiState = uiState,
                         vehicle = activeVehicle,
                         onRefresh = onRefresh,
+                        onOpenVehicleSelector = onOpenVehicleSelector,
                         onToggleFrunk = onToggleFrunk,
                         onToggleLock = onToggleLock,
                         onToggleRearTrunk = onToggleRearTrunk,
@@ -467,6 +481,7 @@ private fun SimplifiedWatchDashboard(
     uiState: GravityWatchUiState,
     vehicle: GravityVehicleSnapshot?,
     onRefresh: () -> Unit,
+    onOpenVehicleSelector: () -> Unit,
     onToggleFrunk: () -> Unit,
     onToggleLock: () -> Unit,
     onToggleRearTrunk: () -> Unit,
@@ -503,6 +518,12 @@ private fun SimplifiedWatchDashboard(
     val isLocked = vehicle.lockState == LockState.LOCKED
     val chargePercent = vehicle.batteryPercent.roundToInt().coerceIn(0, 100)
     val isCharging = vehicle.chargeState.isActivelyCharging
+    // Controls stay frozen until the car is awake and its state is confirmed by Lucid Cloud
+    val controlsLockedReason = uiState.controlsLockedReason
+    val controlsEnabled = controlsLockedReason == null
+    if (!controlsEnabled && pendingConfirmation != null) {
+        pendingConfirmation = null
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -551,58 +572,85 @@ private fun SimplifiedWatchDashboard(
             val showChargingPower = vehicle.chargeState.isCablePluggedIn ||
                 vehicle.chargeRateKw > 0.1 ||
                 vehicle.chargeRateKw < -0.1
-            if (showChargingPower) {
-                val powerColor = when {
-                    vehicle.chargeRateKw < -0.1 -> CryoBlue
-                    vehicle.chargeRateKw > 0.1 -> AuroraGreen
-                    else -> LucidSilver
+            val statusLine = uiState.errorMessage ?: controlsLockedReason
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (uiState.hasMultipleVehicles) {
+                    SwapVehicleButton(onClick = onOpenVehicleSelector)
+                    Spacer(modifier = Modifier.width(4.dp))
                 }
-                val boltTint = if (vehicle.chargeState == ChargeState.EVSE_NOT_READY) {
-                    CrimsonAlert
-                } else {
-                    powerColor
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.offset(y = 1.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Bolt,
-                        contentDescription = "Charging Power",
-                        tint = boltTint,
-                        modifier = Modifier
-                            .size(16.8.dp)
-                            .testTag("charging_bolt_icon")
-                    )
-                    Spacer(modifier = Modifier.width(2.dp))
+                if (statusLine != null) {
                     Text(
-                        text = vehicle.formatChargingPowerKw(),
-                        color = powerColor,
+                        text = statusLine,
+                        color = if (uiState.errorMessage != null && !uiState.isRateLimited) {
+                            CrimsonAlert
+                        } else {
+                            Color(0xFFFFEA00)
+                        },
+                        fontSize = 11.sp,
+                        lineHeight = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .offset(y = 2.dp)
+                            .widthIn(max = 150.dp)
+                            .testTag("vehicle_status_text")
+                    )
+                } else if (showChargingPower) {
+                    val powerColor = when {
+                        vehicle.chargeRateKw < -0.1 -> CryoBlue
+                        vehicle.chargeRateKw > 0.1 -> AuroraGreen
+                        else -> LucidSilver
+                    }
+                    val boltTint = if (vehicle.chargeState == ChargeState.EVSE_NOT_READY) {
+                        CrimsonAlert
+                    } else {
+                        powerColor
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.offset(y = 1.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = "Charging Power",
+                            tint = boltTint,
+                            modifier = Modifier
+                                .size(16.8.dp)
+                                .testTag("charging_bolt_icon")
+                        )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text(
+                            text = vehicle.formatChargingPowerKw(),
+                            color = powerColor,
+                            fontSize = 12.sp,
+                            lineHeight = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .offset(y = 1.dp)
+                                .clickable(enabled = controlsEnabled) {
+                                    pendingConfirmation = PendingConfirmationAction.STOP_CHARGING
+                                }
+                                .testTag("vehicle_nickname_text")
+                        )
+                    }
+                } else {
+                    Text(
+                        text = vehicle.nickname.uppercase(),
+                        color = LucidSilver,
                         fontSize = 12.sp,
                         lineHeight = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
-                            .offset(y = 1.dp)
-                            .clickable { pendingConfirmation = PendingConfirmationAction.STOP_CHARGING }
+                            .offset(y = 2.dp)
                             .testTag("vehicle_nickname_text")
                     )
                 }
-            } else {
-                Text(
-                    text = vehicle.nickname.uppercase(),
-                    color = LucidSilver,
-                    fontSize = 12.sp,
-                    lineHeight = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .offset(y = 2.dp)
-                        .testTag("vehicle_nickname_text")
-                )
             }
         }
 
@@ -622,6 +670,7 @@ private fun SimplifiedWatchDashboard(
                 isPrimaryCenter = false,
                 activeColor = Color(0xFFFFEA00),
                 onClick = { pendingConfirmation = PendingConfirmationAction.FRUNK },
+                enabled = controlsEnabled,
                 testTag = "overview_frunk_button"
             )
 
@@ -634,6 +683,7 @@ private fun SimplifiedWatchDashboard(
                 activeColor = Color(0xFFFFEA00),
                 inactiveColor = Color.Transparent,
                 onClick = { pendingConfirmation = PendingConfirmationAction.LOCK },
+                enabled = controlsEnabled,
                 testTag = "primary_lock_toggle_button"
             )
 
@@ -645,6 +695,7 @@ private fun SimplifiedWatchDashboard(
                 isPrimaryCenter = false,
                 activeColor = Color(0xFFFFEA00),
                 onClick = { pendingConfirmation = PendingConfirmationAction.TRUNK },
+                enabled = controlsEnabled,
                 testTag = "overview_trunk_button"
             )
         }
@@ -666,6 +717,7 @@ private fun SimplifiedWatchDashboard(
                 isPrimaryCenter = false,
                 activeColor = EurekaGold,
                 onClick = onHonkHorn,
+                enabled = controlsEnabled,
                 testTag = "overview_horn_button"
             )
 
@@ -677,6 +729,7 @@ private fun SimplifiedWatchDashboard(
                 isPrimaryCenter = false,
                 activeColor = EurekaGold,
                 onClick = onFlashLights,
+                enabled = controlsEnabled,
                 testTag = "overview_lights_button"
             )
         }
@@ -785,6 +838,119 @@ private fun SimplifiedWatchDashboard(
     }
 }
 
+/** Small circular button that opens the vehicle selector on accounts with several vehicles. */
+@Composable
+private fun SwapVehicleButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .border(1.dp, StealthBorder, CircleShape)
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = "Swap vehicle" }
+            .testTag("swap_vehicle_button"),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.SwapHoriz,
+            contentDescription = null,
+            tint = LucidSilver,
+            modifier = Modifier.size(14.dp)
+        )
+    }
+}
+
+/**
+ * Lists the account's vehicles so the user can pick which one to control. Shown once when an
+ * account has several vehicles and none is chosen, and again from the dashboard's swap button.
+ */
+@Composable
+private fun VehicleSelectorView(
+    uiState: GravityWatchUiState,
+    onSelectVehicle: (String) -> Unit,
+    onCancel: () -> Unit
+) {
+    val hasCurrentChoice = uiState.vehicles.any { it.vehicleId == uiState.selectedVehicleId }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 22.dp, vertical = 26.dp)
+            .testTag("vehicle_selector"),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "CHOOSE VEHICLE",
+            color = EurekaGold,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        uiState.vehicles.forEach { vehicle ->
+            val isCurrent = vehicle.vehicleId == uiState.selectedVehicleId
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(StealthCard)
+                    .border(
+                        width = if (isCurrent) 1.5.dp else 1.dp,
+                        color = if (isCurrent) EurekaGold else StealthBorder,
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                    .clickable { onSelectVehicle(vehicle.vehicleId) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .testTag("vehicle_option_${vehicle.vehicleId}"),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = vehicle.nickname,
+                    color = LucidPlatinum,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${vehicle.model.displayName} · VIN …${vehicle.vin.takeLast(6)}",
+                    color = LucidSilver,
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = vehicleLastSeenText(vehicle),
+                    color = LucidSilver,
+                    fontSize = 10.sp,
+                    maxLines = 1
+                )
+            }
+        }
+        if (hasCurrentChoice) {
+            Spacer(modifier = Modifier.height(6.dp))
+            SmallChipButton("Cancel", false, onCancel, "vehicle_selector_cancel")
+        }
+    }
+}
+
+/** Battery level plus how long ago the car last reported, e.g. "66% · 2m ago". */
+private fun vehicleLastSeenText(
+    vehicle: GravityVehicleSnapshot,
+    nowMs: Long = System.currentTimeMillis()
+): String {
+    val battery = "${vehicle.batteryPercent.roundToInt()}%"
+    if (vehicle.lastUpdatedMs <= 0L) return battery
+    val ageMinutes = ((nowMs - vehicle.lastUpdatedMs) / 60_000L).coerceAtLeast(0L)
+    val age = when {
+        ageMinutes < 2 -> "just now"
+        ageMinutes < 60 -> "${ageMinutes}m ago"
+        ageMinutes < 48 * 60 -> "${ageMinutes / 60}h ago"
+        else -> "${ageMinutes / (24 * 60)}d ago"
+    }
+    return "$battery · $age"
+}
+
 @Composable
 private fun ControlIconButton(
     @DrawableRes drawableRes: Int,
@@ -795,59 +961,66 @@ private fun ControlIconButton(
     inactiveColor: Color = StealthBorder,
     iconTint: Color = Color(0xFFDEC79B),
     onClick: () -> Unit,
+    enabled: Boolean = true,
     testTag: String
 ) {
     val buttonSize = if (isPrimaryCenter) 62.4.dp else 55.2.dp
     val borderColor = if (isActive) activeColor else inactiveColor
 
-    Surface(
-        modifier = Modifier
-            .size(buttonSize)
-            .clip(CircleShape)
-            .then(
-                if (borderColor != Color.Transparent) {
-                    Modifier.border(
-                        width = if (isPrimaryCenter || isActive) 2.dp else 1.dp,
-                        color = borderColor,
-                        shape = CircleShape
-                    )
-                } else {
-                    Modifier
-                }
-            )
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = contentDesc }
-            .testTag(testTag),
-        color = ObsidianBlack,
-        shape = CircleShape
-    ) {
-        if (isPrimaryCenter) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
+    // Keyed on the ring and frozen state: on the watch the ring sometimes kept its previous
+    // colour after the closure state changed (yellow on a closed trunk). Rebuilding the button
+    // whenever either changes guarantees a fresh draw.
+    key(isActive, enabled) {
+        Surface(
+            modifier = Modifier
+                .size(buttonSize)
+                .clip(CircleShape)
+                .then(
+                    if (borderColor != Color.Transparent) {
+                        Modifier.border(
+                            width = if (isPrimaryCenter || isActive) 2.dp else 1.dp,
+                            color = borderColor,
+                            shape = CircleShape
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
+                .alpha(if (enabled) 1f else 0.35f)
+                .clickable(enabled = enabled, onClick = onClick)
+                .semantics { contentDescription = contentDesc }
+                .testTag(testTag),
+            color = ObsidianBlack,
+            shape = CircleShape
+        ) {
+            if (isPrimaryCenter) {
                 Box(
-                    modifier = Modifier
-                        .size(buttonSize * (100f / 116f))
-                        .clip(CircleShape)
-                        .background(Color(0xFF1B1B1B)),
+                    modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        painter = painterResource(id = drawableRes),
-                        contentDescription = null,
-                        tint = iconTint,
-                        modifier = Modifier.size(36.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(buttonSize * (100f / 116f))
+                            .clip(CircleShape)
+                            .background(Color(0xFF1B1B1B)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = drawableRes),
+                            contentDescription = null,
+                            tint = iconTint,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
                 }
+            } else {
+                Image(
+                    painter = painterResource(id = drawableRes),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
-        } else {
-            Image(
-                painter = painterResource(id = drawableRes),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
         }
     }
 }

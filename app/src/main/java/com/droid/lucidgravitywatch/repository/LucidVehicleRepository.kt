@@ -20,6 +20,8 @@ import com.droid.lucidgravitywatch.network.LucidApiException
 import com.droid.lucidgravitywatch.network.LucidGrpcTransport
 import com.droid.lucidgravitywatch.protocol.LucidProtobufCodec
 import com.droid.lucidgravitywatch.storage.SessionStore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 interface LucidVehicleRepository {
     fun getActiveSession(): LucidSession?
@@ -35,6 +37,13 @@ interface LucidVehicleRepository {
     ): List<GravityVehicleSnapshot>
 
     suspend fun fetchVehicles(): List<GravityVehicleSnapshot>
+
+    /**
+     * Current state of one vehicle via GetVehicleState. Unlike [fetchVehicles] (GetUserVehicles,
+     * ~5 calls per server minute) this call had no rate limit at 1 call/second, so it is the one
+     * to poll. Identity fields come from [vehicle].
+     */
+    suspend fun fetchVehicleState(vehicle: GravityVehicleSnapshot): GravityVehicleSnapshot
     suspend fun wakeVehicle(vehicle: GravityVehicleSnapshot): GravityVehicleSnapshot
     suspend fun setDoorLocks(vehicle: GravityVehicleSnapshot, lockState: LockState): GravityVehicleSnapshot
     suspend fun setFrunkState(vehicle: GravityVehicleSnapshot, doorState: DoorState): GravityVehicleSnapshot
@@ -81,6 +90,9 @@ class LucidCloudVehicleRepository(
 ) : LucidVehicleRepository {
 
     private var demoVehicleSnapshot: GravityVehicleSnapshot = createDefaultDemoVehicle()
+
+    /** Serializes token refreshes so concurrent calls share one GetNewJWTToken. */
+    private val sessionRefreshMutex = Mutex()
 
     private fun isDemoSession(session: LucidSession?): Boolean =
         session?.idToken == DEMO_REVIEWER_TOKEN ||
@@ -149,33 +161,33 @@ class LucidCloudVehicleRepository(
         val vehicles = decoded.vehicles.ifEmpty {
             fetchVehiclesInternal(decoded.session)
         }
-        val preferredVehicle = vehicles.firstOrNull { it.model == VehicleModel.GRAVITY }
-            ?: vehicles.firstOrNull()
-        if (preferredVehicle != null && sessionStore.getSelectedVehicleId().isNullOrBlank()) {
-            sessionStore.setSelectedVehicleId(preferredVehicle.vehicleId)
-        }
+        autoSelectOnlyVehicle(vehicles)
         return vehicles
     }
 
     private suspend fun ensureValidSession(): LucidSession {
-        val current = sessionStore.loadSession()
-            ?: throw LucidApiException(16, "Not signed in to Lucid account.")
-        if (isDemoSession(current)) {
+        sessionRefreshMutex.withLock {
+            // Re-read inside the lock: a caller that waited here usually finds a session another
+            // caller has just refreshed.
+            val current = sessionStore.loadSession()
+                ?: throw LucidApiException(16, "Not signed in to Lucid account.")
+            if (isDemoSession(current)) {
+                return current
+            }
+            if (current.isExpired() && current.refreshToken.isNotBlank()) {
+                val req = LucidProtobufCodec.encodeGetNewJwtTokenRequest(current.refreshToken)
+                val resp = transport.unaryCall(
+                    region = current.region,
+                    serviceMethod = METHOD_GET_NEW_JWT_TOKEN,
+                    requestProtobuf = req,
+                    bearerToken = current.idToken
+                )
+                val refreshed = LucidProtobufCodec.decodeGetNewJwtTokenResponse(resp, current)
+                sessionStore.saveSession(refreshed)
+                return refreshed
+            }
             return current
         }
-        if (current.isExpired() && current.refreshToken.isNotBlank()) {
-            val req = LucidProtobufCodec.encodeGetNewJwtTokenRequest(current.refreshToken)
-            val resp = transport.unaryCall(
-                region = current.region,
-                serviceMethod = METHOD_GET_NEW_JWT_TOKEN,
-                requestProtobuf = req,
-                bearerToken = current.idToken
-            )
-            val refreshed = LucidProtobufCodec.decodeGetNewJwtTokenResponse(resp, current)
-            sessionStore.saveSession(refreshed)
-            return refreshed
-        }
-        return current
     }
 
     override suspend fun fetchVehicles(): List<GravityVehicleSnapshot> {
@@ -186,6 +198,20 @@ class LucidCloudVehicleRepository(
         return fetchVehiclesInternal(session)
     }
 
+    override suspend fun fetchVehicleState(vehicle: GravityVehicleSnapshot): GravityVehicleSnapshot {
+        val session = ensureValidSession()
+        if (isDemoSession(session)) {
+            return demoVehicleSnapshot
+        }
+        val responseBytes = transport.unaryCall(
+            region = session.region,
+            serviceMethod = METHOD_GET_VEHICLE_STATE,
+            requestProtobuf = LucidProtobufCodec.encodeGetVehicleStateRequest(vehicle.vehicleId),
+            bearerToken = session.idToken
+        )
+        return LucidProtobufCodec.decodeGetVehicleStateResponse(responseBytes, vehicle)
+    }
+
     private suspend fun fetchVehiclesInternal(session: LucidSession): List<GravityVehicleSnapshot> {
         val responseBytes = transport.unaryCall(
             region = session.region,
@@ -194,11 +220,19 @@ class LucidCloudVehicleRepository(
             bearerToken = session.idToken
         )
         val vehicles = LucidProtobufCodec.decodeGetUserVehiclesResponse(responseBytes)
-        if (vehicles.isNotEmpty() && sessionStore.getSelectedVehicleId().isNullOrBlank()) {
-            val preferred = vehicles.firstOrNull { it.model == VehicleModel.GRAVITY } ?: vehicles.first()
-            sessionStore.setSelectedVehicleId(preferred.vehicleId)
-        }
+        autoSelectOnlyVehicle(vehicles)
         return vehicles
+    }
+
+    /**
+     * Saves the selection only when the account has a single vehicle; with several vehicles the
+     * user picks one in the vehicle selector instead of being handed an arbitrary one.
+     */
+    private fun autoSelectOnlyVehicle(vehicles: List<GravityVehicleSnapshot>) {
+        val onlyVehicle = vehicles.singleOrNull() ?: return
+        if (sessionStore.getSelectedVehicleId().isNullOrBlank()) {
+            sessionStore.setSelectedVehicleId(onlyVehicle.vehicleId)
+        }
     }
 
     private suspend fun ensureAwakeIfRequired(
@@ -617,6 +651,7 @@ class LucidCloudVehicleRepository(
         const val METHOD_LOGIN = "/mobilegateway.protos.LoginSession/Login"
         const val METHOD_GET_NEW_JWT_TOKEN = "/mobilegateway.protos.LoginSession/GetNewJWTToken"
         const val METHOD_GET_USER_VEHICLES = "/mobilegateway.protos.LoginSession/GetUserVehicles"
+        const val METHOD_GET_VEHICLE_STATE = "/mobilegateway.protos.VehicleStateService/GetVehicleState"
         const val METHOD_WAKEUP_VEHICLE = "/mobilegateway.protos.VehicleStateService/WakeupVehicle"
         const val METHOD_DOOR_LOCKS_CONTROL = "/mobilegateway.protos.VehicleStateService/DoorLocksControl"
         const val METHOD_FRONT_CARGO_CONTROL = "/mobilegateway.protos.VehicleStateService/FrontCargoControl"

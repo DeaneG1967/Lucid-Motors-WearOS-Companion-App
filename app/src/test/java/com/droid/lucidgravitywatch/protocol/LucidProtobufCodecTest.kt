@@ -266,4 +266,79 @@ class LucidProtobufCodecTest {
         assertEquals("veh-gravity-1", hornFields.getString(1))
         assertTrue(hornReq.isNotEmpty())
     }
+
+    @Test
+    fun getVehicleState_encodesVehicleId_andDecodesStateKeepingIdentity() {
+        assertArrayEquals(
+            byteArrayOf(0x0a, 0x03) + "v-1".toByteArray(),
+            LucidProtobufCodec.encodeGetVehicleStateRequest("v-1")
+        )
+
+        val known = LucidProtobufCodec.decodeGetUserVehiclesResponse(
+            LucidProtobufCodec.buildGetUserVehiclesResponseBytesForTest(
+                vehicleId = "v-1",
+                vin = "50EA1GBA5NA005210",
+                nickname = "PE GT",
+                modelCode = 1,
+                powerCode = 1,
+                lockCode = 2
+            )
+        ).single()
+
+        val decoded = LucidProtobufCodec.decodeGetVehicleStateResponse(
+            LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(
+                vehicleId = "v-1",
+                powerCode = 9,
+                lockCode = 1,
+                frunkCode = 1,
+                batteryPercent = 66.0
+            ),
+            known
+        )
+
+        assertEquals("PE GT", decoded.nickname)
+        assertEquals("50EA1GBA5NA005210", decoded.vin)
+        assertEquals(VehicleModel.AIR, decoded.model)
+        assertEquals(PowerState.CLOUD_1, decoded.powerState)
+        assertEquals(LockState.UNLOCKED, decoded.lockState)
+        assertEquals(DoorState.OPEN, decoded.frunkState)
+        assertEquals(66.0, decoded.batteryPercent, 0.01)
+
+        // A waking car's partial report (power + body only) keeps the other sections' values
+        val partialState = LucidProtobufCodec.ProtoWriter().apply {
+            writeIntField(2, 11) // MONITOR
+            writeBytesField(4, LucidProtobufCodec.ProtoWriter().apply { writeIntField(1, 2) }.toByteArray())
+        }.toByteArray()
+        val partialResponse = LucidProtobufCodec.ProtoWriter().apply {
+            writeStringField(1, "v-1")
+            writeBytesField(2, partialState)
+        }.toByteArray()
+        val partial = LucidProtobufCodec.decodeGetVehicleStateResponse(partialResponse, decoded)
+        assertEquals(PowerState.MONITOR, partial.powerState)
+        assertEquals(LockState.LOCKED, partial.lockState)
+        assertEquals(66.0, partial.batteryPercent, 0.01)
+        assertEquals(decoded.lastUpdatedMs, partial.lastUpdatedMs)
+
+        // Placeholder battery values sent while the car's battery management boots (seen live:
+        // 255% charge, 655 kWh) keep the previous battery reading
+        val placeholderState = LucidProtobufCodec.ProtoWriter().apply {
+            writeBytesField(
+                1,
+                LucidProtobufCodec.ProtoWriter().apply {
+                    writeDoubleField(1, 486.0)
+                    writeDoubleField(2, 255.0)
+                    writeDoubleField(3, 655.0)
+                }.toByteArray()
+            )
+            writeIntField(2, 1) // SLEEP
+        }.toByteArray()
+        val placeholderResponse = LucidProtobufCodec.ProtoWriter().apply {
+            writeStringField(1, "v-1")
+            writeBytesField(2, placeholderState)
+        }.toByteArray()
+        val placeholder = LucidProtobufCodec.decodeGetVehicleStateResponse(placeholderResponse, decoded)
+        assertEquals(66.0, placeholder.batteryPercent, 0.01)
+        assertEquals(decoded.batteryKwh, placeholder.batteryKwh, 0.01)
+        assertEquals(PowerState.SLEEP, placeholder.powerState)
+    }
 }

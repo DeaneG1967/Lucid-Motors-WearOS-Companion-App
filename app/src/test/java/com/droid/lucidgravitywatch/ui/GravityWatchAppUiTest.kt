@@ -142,6 +142,7 @@ class GravityWatchAppUiTest {
                 GravityWatchScreen(
                     uiState = GravityWatchUiState(
                         isAuthenticated = true,
+                        hasFreshTelemetry = true,
                         vehicles = listOf(currentVehicle.value),
                         selectedVehicleId = currentVehicle.value.vehicleId
                     ),
@@ -213,6 +214,8 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithTag("charging_bolt_icon").assertDoesNotExist()
         composeTestRule.onNodeWithText("GRAVITY GT").assertIsDisplayed()
 
+        composeTestRule.onNodeWithTag("swap_vehicle_button").assertDoesNotExist()
+
         // Verify Locked state initially shown on Door Lock/Unlock button
         composeTestRule.onNodeWithContentDescription("Doors Locked - Tap to Unlock").assertIsDisplayed()
 
@@ -271,6 +274,99 @@ class GravityWatchAppUiTest {
 
         composeTestRule.onNodeWithTag("overview_lights_button").performClick()
         assertTrue(lightsClicked)
+    }
+
+    @Test
+    fun simplifiedDashboard_freezesControlsAndShowsReasonUntilCarAwakeAndStatusKnown() {
+        var frunkClicked = false
+        var hornClicked = false
+        val uiState = mutableStateOf(
+            GravityWatchUiState(
+                isAuthenticated = true,
+                hasFreshTelemetry = true,
+                isWakingVehicle = true,
+                vehicles = listOf(sampleGravity.copy(powerState = PowerState.SLEEP)),
+                selectedVehicleId = sampleGravity.vehicleId
+            )
+        )
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = uiState.value,
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onToggleFrunk = { frunkClicked = true },
+                    onHonkHorn = { hornClicked = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("Waking car…").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
+        composeTestRule.onNodeWithTag("confirmation_popup_overlay").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("overview_horn_button").performClick()
+        org.junit.Assert.assertFalse(hornClicked)
+
+        // Car awake and status known -> controls work and the status line is replaced
+        uiState.value = uiState.value.copy(
+            isWakingVehicle = false,
+            vehicles = listOf(sampleGravity)
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("vehicle_status_text").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
+        composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
+        assertTrue(frunkClicked)
+    }
+
+    @Test
+    fun vehicleSelector_shownWhenNoVehicleChosen_andSwapButtonOpensIt() {
+        val secondCar = sampleGravity.copy(vehicleId = "veh-air-pe", nickname = "PE GT", vin = "50EA1GBA5NA005210")
+        val uiState = mutableStateOf(
+            GravityWatchUiState(
+                isAuthenticated = true,
+                hasFreshTelemetry = true,
+                vehicles = listOf(sampleGravity, secondCar)
+            )
+        )
+        var selectedId: String? = null
+        var swapClicked = false
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = uiState.value,
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onSelectVehicle = { id ->
+                        selectedId = id
+                        uiState.value = uiState.value.copy(selectedVehicleId = id, isSelectingVehicle = false)
+                    },
+                    onOpenVehicleSelector = {
+                        swapClicked = true
+                        uiState.value = uiState.value.copy(isSelectingVehicle = true)
+                    }
+                )
+            }
+        }
+
+        // No vehicle chosen yet -> selector lists both cars, no Cancel
+        composeTestRule.onNodeWithTag("vehicle_selector").assertIsDisplayed()
+        composeTestRule.onNodeWithText("VIN …005210", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("vehicle_selector_cancel").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("vehicle_option_veh-air-pe").performClick()
+        assertEquals("veh-air-pe", selectedId)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("vehicle_selector").assertDoesNotExist()
+
+        // Dashboard shows the swap button, which reopens the selector with a Cancel option
+        composeTestRule.onNodeWithTag("swap_vehicle_button").performClick()
+        assertTrue(swapClicked)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("vehicle_selector").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("vehicle_selector_cancel").performScrollTo().assertIsDisplayed()
     }
 
     @Test

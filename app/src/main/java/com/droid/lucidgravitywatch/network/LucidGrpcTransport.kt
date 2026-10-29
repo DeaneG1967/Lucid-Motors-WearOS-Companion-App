@@ -1,5 +1,6 @@
 package com.droid.lucidgravitywatch.network
 
+import android.util.Log
 import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.protocol.LucidProtobufCodec
 import kotlinx.coroutines.Dispatchers
@@ -94,38 +95,78 @@ class OkHttpLucidGrpcTransport(
             requestBuilder.header(k, v)
         }
 
-        client.newCall(requestBuilder.build()).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw LucidApiException(
-                    grpcStatus = response.code,
-                    message = "Lucid Cloud HTTP ${response.code}: ${response.message}"
+        val redactPayloads = normalizedMethod in SENSITIVE_METHODS
+        Log.i(
+            TAG,
+            "→ $normalizedMethod host=${region.apiHost} auth=${!bearerToken.isNullOrBlank()} " +
+                "request=${describePayload(requestProtobuf, redactPayloads)}"
+        )
+        val startedAtMs = System.currentTimeMillis()
+
+        try {
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                val elapsedMs = System.currentTimeMillis() - startedAtMs
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "← $normalizedMethod HTTP ${response.code} ${response.message} (${elapsedMs}ms)")
+                    throw LucidApiException(
+                        grpcStatus = response.code,
+                        message = "Lucid Cloud HTTP ${response.code}: ${response.message}"
+                    )
+                }
+
+                val bodyBytes = response.body?.bytes() ?: ByteArray(0)
+
+                val trailerStatus = runCatching { response.trailers()["grpc-status"] }.getOrNull()
+                val headerStatus = response.header("grpc-status")
+                val grpcStatus = (trailerStatus ?: headerStatus)?.toIntOrNull() ?: 0
+
+                if (grpcStatus != 0) {
+                    val rawMessage = runCatching { response.trailers()["grpc-message"] }.getOrNull()
+                        ?: response.header("grpc-message")
+                        ?: "gRPC status code $grpcStatus"
+                    val decodedMessage = runCatching {
+                        URLDecoder.decode(rawMessage, "UTF-8")
+                    }.getOrDefault(rawMessage)
+                    Log.w(TAG, "← $normalizedMethod grpc-status=$grpcStatus \"$decodedMessage\" (${elapsedMs}ms)")
+                    throw LucidApiException(
+                        grpcStatus = grpcStatus,
+                        message = "Lucid Cloud API Error ($grpcStatus): $decodedMessage"
+                    )
+                }
+
+                val decoded = LucidProtobufCodec.decodeGrpcFrame(bodyBytes)
+                Log.i(
+                    TAG,
+                    "← $normalizedMethod OK (${elapsedMs}ms) response=${describePayload(decoded, redactPayloads)}"
                 )
+                decoded
             }
-
-            val bodyBytes = response.body?.bytes() ?: ByteArray(0)
-
-            val trailerStatus = runCatching { response.trailers()["grpc-status"] }.getOrNull()
-            val headerStatus = response.header("grpc-status")
-            val grpcStatus = (trailerStatus ?: headerStatus)?.toIntOrNull() ?: 0
-
-            if (grpcStatus != 0) {
-                val rawMessage = runCatching { response.trailers()["grpc-message"] }.getOrNull()
-                    ?: response.header("grpc-message")
-                    ?: "gRPC status code $grpcStatus"
-                val decodedMessage = runCatching {
-                    URLDecoder.decode(rawMessage, "UTF-8")
-                }.getOrDefault(rawMessage)
-                throw LucidApiException(
-                    grpcStatus = grpcStatus,
-                    message = "Lucid Cloud API Error ($grpcStatus): $decodedMessage"
-                )
-            }
-
-            LucidProtobufCodec.decodeGrpcFrame(bodyBytes)
+        } catch (err: LucidApiException) {
+            throw err
+        } catch (err: IOException) {
+            val elapsedMs = System.currentTimeMillis() - startedAtMs
+            Log.w(TAG, "✕ $normalizedMethod network failure after ${elapsedMs}ms: $err")
+            throw err
         }
     }
 
     companion object {
+        private const val TAG = "LucidGrpc"
+        private const val MAX_LOGGED_PAYLOAD_BYTES = 1024
+
+        /** Methods whose payloads carry passwords or tokens and must never be logged. */
+        private val SENSITIVE_METHODS = setOf(
+            "/mobilegateway.protos.LoginSession/Login",
+            "/mobilegateway.protos.LoginSession/GetNewJWTToken"
+        )
+
+        private fun describePayload(bytes: ByteArray, redact: Boolean): String {
+            if (redact) return "${bytes.size}B <redacted>"
+            val shown = bytes.take(MAX_LOGGED_PAYLOAD_BYTES).joinToString("") { "%02x".format(it) }
+            val suffix = if (bytes.size > MAX_LOGGED_PAYLOAD_BYTES) "…" else ""
+            return "${bytes.size}B $shown$suffix"
+        }
+
         private val GRPC_MEDIA_TYPE = "application/grpc".toMediaType()
 
         private val GRPC_HEADER_SANITIZER = Interceptor { chain ->

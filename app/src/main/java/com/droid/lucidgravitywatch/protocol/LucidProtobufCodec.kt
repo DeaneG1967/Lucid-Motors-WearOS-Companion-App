@@ -312,10 +312,106 @@ object LucidProtobufCodec {
         return root.getSubMessages(1).map { decodeVehicleMessage(it) }
     }
 
+    fun encodeGetVehicleStateRequest(vehicleId: String): ByteArray {
+        val writer = ProtoWriter()
+        writer.writeStringField(1, vehicleId)
+        return writer.toByteArray()
+    }
+
+    /**
+     * GetVehicleState returns only the state block (field 2, the same VehicleState message as
+     * GetUserVehicles' field 4); identity fields such as VIN and nickname are carried over from [vehicle].
+     *
+     * A waking car's first reports omit whole sections (e.g. no battery block, which would otherwise
+     * decode as 0%), so any section missing from the response keeps its value from [vehicle].
+     */
+    fun decodeGetVehicleStateResponse(bytes: ByteArray, vehicle: GravityVehicleSnapshot): GravityVehicleSnapshot {
+        val state = parseRawFields(bytes).getSubMessage(2) ?: return vehicle
+        val decoded = decodeVehicleState(
+            state = state,
+            vehicleId = vehicle.vehicleId,
+            vin = vehicle.vin,
+            nickname = vehicle.nickname,
+            model = vehicle.model,
+            variantName = vehicle.variantName,
+            paintColorName = vehicle.paintColorName
+        )
+        return decoded.keepSectionsMissingFrom(state, previous = vehicle)
+    }
+
+    private fun GravityVehicleSnapshot.keepSectionsMissingFrom(
+        state: ProtoFieldMap,
+        previous: GravityVehicleSnapshot
+    ): GravityVehicleSnapshot {
+        fun missing(fieldNumber: Int) = state.bytesList[fieldNumber].isNullOrEmpty()
+        var merged = this
+        if (state.varints[2].isNullOrEmpty()) {
+            merged = merged.copy(powerState = previous.powerState, powerStateCode = previous.powerStateCode)
+        }
+        // While the car's battery management is still booting after a wake, the battery block
+        // carries placeholder values (255% charge, 655 kWh) rather than being omitted.
+        val rawBatteryPercent = state.getSubMessage(1)?.fixed64s?.get(2)?.lastOrNull()?.let(Double::fromBits)
+        if (missing(1) || rawBatteryPercent == null || rawBatteryPercent !in 0.0..100.0) {
+            merged = merged.copy(
+                batteryPercent = previous.batteryPercent,
+                remainingRangeKm = previous.remainingRangeKm,
+                batteryKwh = previous.batteryKwh,
+                batteryCapacityKwh = previous.batteryCapacityKwh,
+                batteryPreconStatus = previous.batteryPreconStatus
+            )
+        }
+        if (missing(3)) {
+            merged = merged.copy(
+                interiorTempCelsius = previous.interiorTempCelsius,
+                exteriorTempCelsius = previous.exteriorTempCelsius
+            )
+        }
+        if (missing(4)) {
+            merged = merged.copy(
+                lockState = previous.lockState,
+                walkawayState = previous.walkawayState,
+                frunkState = previous.frunkState,
+                rearTrunkState = previous.rearTrunkState,
+                chargePortState = previous.chargePortState,
+                frontLeftDoor = previous.frontLeftDoor,
+                frontRightDoor = previous.frontRightDoor,
+                rearLeftDoor = previous.rearLeftDoor,
+                rearRightDoor = previous.rearRightDoor
+            )
+        }
+        if (missing(6)) {
+            merged = merged.copy(odometerKm = previous.odometerKm, softwareVersion = previous.softwareVersion)
+        }
+        if (missing(8)) {
+            merged = merged.copy(
+                chargeState = previous.chargeState,
+                chargeLimitPercent = previous.chargeLimitPercent,
+                chargeRateKw = previous.chargeRateKw,
+                chargeRateMph = previous.chargeRateMph,
+                sessionMinutesRemaining = previous.sessionMinutesRemaining
+            )
+        }
+        if (missing(17)) {
+            merged = merged.copy(
+                hvacPower = previous.hvacPower,
+                defrostState = previous.defrostState,
+                maxAcEnabled = previous.maxAcEnabled,
+                driverSeatHeatMode = previous.driverSeatHeatMode,
+                driverSeatVentMode = previous.driverSeatVentMode,
+                passengerSeatHeatMode = previous.passengerSeatHeatMode,
+                steeringHeaterLevel = previous.steeringHeaterLevel,
+                targetTempCelsius = previous.targetTempCelsius
+            )
+        }
+        if (lastUpdatedMs == 0L) {
+            merged = merged.copy(lastUpdatedMs = previous.lastUpdatedMs)
+        }
+        return merged
+    }
+
     private fun decodeVehicleMessage(veh: ProtoFieldMap): GravityVehicleSnapshot {
         val vehicleId = veh.getString(1)
         val config = veh.getSubMessage(3)
-        val state = veh.getSubMessage(4)
 
         val vin = config?.getString(1).orEmpty()
         val model = VehicleModel.fromProto(config?.getInt(2) ?: 0)
@@ -325,8 +421,29 @@ object LucidProtobufCodec {
         }
         val paintColorName = paintColorNameFromProto(config?.getInt(6) ?: 0)
 
+        return decodeVehicleState(
+            state = veh.getSubMessage(4),
+            vehicleId = vehicleId,
+            vin = vin,
+            nickname = nickname,
+            model = model,
+            variantName = variantName,
+            paintColorName = paintColorName
+        )
+    }
+
+    private fun decodeVehicleState(
+        state: ProtoFieldMap?,
+        vehicleId: String,
+        vin: String,
+        nickname: String,
+        model: VehicleModel,
+        variantName: String,
+        paintColorName: String
+    ): GravityVehicleSnapshot {
         val battery = state?.getSubMessage(1)
-        val powerState = PowerState.fromProto(state?.getInt(2) ?: 0)
+        val powerStateCode = state?.getInt(2) ?: 0
+        val powerState = PowerState.fromProto(powerStateCode)
         val cabin = state?.getSubMessage(3)
         val body = state?.getSubMessage(4)
         val lastUpdatedMs = state?.getVarint(5) ?: 0L
@@ -392,6 +509,7 @@ object LucidProtobufCodec {
             variantName = variantName,
             paintColorName = paintColorName,
             powerState = powerState,
+            powerStateCode = powerStateCode,
             lockState = lockState,
             walkawayState = walkawayState,
             frunkState = frunkState,
@@ -714,6 +832,29 @@ object LucidProtobufCodec {
         )
         return ProtoWriter().apply {
             writeBytesField(1, vehicleBytes)
+        }.toByteArray()
+    }
+
+    fun buildGetVehicleStateResponseBytesForTest(
+        vehicleId: String,
+        powerCode: Int = 9,
+        lockCode: Int = 2,
+        frunkCode: Int = 2,
+        batteryPercent: Double = 80.0
+    ): ByteArray {
+        val vehicleBytes = buildVehicleProtoBytes(
+            vehicleId = vehicleId,
+            vin = "",
+            nickname = "",
+            powerCode = powerCode,
+            lockCode = lockCode,
+            frunkCode = frunkCode,
+            batteryPercent = batteryPercent
+        )
+        val stateBytes = parseRawFields(vehicleBytes).bytesList.getValue(4).last()
+        return ProtoWriter().apply {
+            writeStringField(1, vehicleId)
+            writeBytesField(2, stateBytes)
         }.toByteArray()
     }
 

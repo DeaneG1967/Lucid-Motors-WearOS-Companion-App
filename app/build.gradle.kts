@@ -72,6 +72,8 @@ android {
                     isIncludeNoLocationClasses = true
                     excludes = listOf("jdk.internal.*")
                 }
+                // Lets Robolectric (GraphicsMode.NATIVE) render real pixels for captureToImage()
+                it.systemProperty("robolectric.pixelCopyRenderMode", "hardware")
             }
         }
     }

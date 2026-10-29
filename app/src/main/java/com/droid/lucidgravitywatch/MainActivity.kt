@@ -35,8 +35,6 @@ class MainActivity : ComponentActivity() {
         GravityWatchViewModel.Factory(repository)
     }
 
-    private var ambientWakeLock: PowerManager.WakeLock? = null
-
     private val powerStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -50,7 +48,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        acquireAmbientWakeLock()
         setContent {
             LucidGravityWatchTheme {
                 Surface(
@@ -84,49 +81,17 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
-        // Transition to Ambient power state; polling remains active in Ambient mode
+        // Still visible but not interactive (e.g. display dimming): poll slowly until stopped
         viewModel.setInteractivePowerState(false)
         super.onPause()
     }
 
     override fun onStop() {
-        // Keep polling active in Ambient power state when the watch display dims/dozes
-        viewModel.setInteractivePowerState(false)
+        // Not visible any more (backgrounded, or the watch returned to its face): stop polling so a
+        // hidden app never spends the watch's battery or Lucid's rate limit.
+        viewModel.suspendPolling()
         runCatching { unregisterReceiver(powerStateReceiver) }
         super.onStop()
-    }
-
-    override fun onDestroy() {
-        if (isFinishing) {
-            viewModel.suspendPolling()
-        }
-        releaseAmbientWakeLock()
-        super.onDestroy()
-    }
-
-    private fun acquireAmbientWakeLock() {
-        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
-        if (ambientWakeLock == null) {
-            ambientWakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "LucidCars::AmbientPollingWakeLock"
-            ).apply {
-                setReferenceCounted(false)
-            }
-        }
-        runCatching {
-            if (ambientWakeLock?.isHeld == false) {
-                ambientWakeLock?.acquire()
-            }
-        }
-    }
-
-    private fun releaseAmbientWakeLock() {
-        runCatching {
-            if (ambientWakeLock?.isHeld == true) {
-                ambientWakeLock?.release()
-            }
-        }
     }
 
     private fun syncInteractivePowerState(forceInteractive: Boolean? = null) {

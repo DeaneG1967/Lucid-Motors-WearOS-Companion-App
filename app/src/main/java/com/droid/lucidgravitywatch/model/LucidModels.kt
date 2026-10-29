@@ -77,11 +77,24 @@ enum class PowerState(val protoValue: Int, val displayName: String) {
     CLOUD_1(9, "Awake"),
     CLOUD_2(10, "Awake"),
     MONITOR(11, "Monitor"),
-    DROWSY(12, "Drowsy"),
-    SLEEP_PENDING(13, "Sleeping");
 
+    // 12 and 13 are not in Lucid's published PowerState enum (it ends at 11). A Gravity has been
+    // seen reporting 13 intermittently, apparently as a monitor/keep-alive state, so neither is
+    // treated as asleep.
+    UNDOCUMENTED_12(12, "State 12"),
+    UNDOCUMENTED_13(13, "State 13");
+
+    /** The documented sleep states: the car's main systems are off. */
     val isSleeping: Boolean
-        get() = this == SLEEP || this == DROWSY || this == SLEEP_PENDING
+        get() = this == SLEEP || this == SLEEP_CHARGE || this == SLEEP_UPDATE
+
+    /**
+     * True when the state itself says the car is awake enough to act on remote commands. A car in
+     * a sleep state (notably [SLEEP_CHARGE]) or [UNKNOWN] may still be reachable; the view model
+     * also treats a car whose reports keep arriving as reachable.
+     */
+    val isAwake: Boolean
+        get() = !isSleeping && this != UNKNOWN
 
     companion object {
         fun fromProto(value: Int): PowerState =
@@ -274,7 +287,10 @@ data class GravityVehicleSnapshot(
     val steeringHeaterLevel: SteeringWheelHeaterLevel,
     val odometerKm: Double,
     val softwareVersion: String,
-    val lastUpdatedMs: Long
+    /** When the car sent this state, in Lucid's server clock (epoch ms); unchanged while it sleeps. */
+    val lastUpdatedMs: Long,
+    /** Raw power-state number as reported, kept for logging values [PowerState] does not know. */
+    val powerStateCode: Int = powerState.protoValue
 ) {
     val remainingRangeMiles: Int
         get() = (remainingRangeKm * 0.621371).roundToInt()

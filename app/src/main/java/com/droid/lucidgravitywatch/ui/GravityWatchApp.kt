@@ -444,22 +444,6 @@ private fun LucidWatchLoginView(
     }
 }
 
-/**
- * Frunk / trunk artwork is model-specific. The Air variants are placeholders (generated from
- * Icon Images/air_frunk_trunk.jpg) until final Air icons are supplied. UNKNOWN falls back to Gravity.
- */
-@DrawableRes
-private fun frunkIconRes(model: VehicleModel, isOpen: Boolean): Int = when (model) {
-    VehicleModel.AIR -> if (isOpen) R.drawable.btn_frunk_open_air else R.drawable.btn_open_frunk_air
-    else -> if (isOpen) R.drawable.btn_frunk_open else R.drawable.btn_open_frunk
-}
-
-@DrawableRes
-private fun trunkIconRes(model: VehicleModel, isOpen: Boolean): Int = when (model) {
-    VehicleModel.AIR -> if (isOpen) R.drawable.btn_trunk_open_air else R.drawable.btn_open_trunk_air
-    else -> if (isOpen) R.drawable.btn_trunk_open else R.drawable.btn_open_trunk
-}
-
 private enum class PendingConfirmationAction {
     FRUNK,
     LOCK,
@@ -896,4 +880,20 @@ private fun SmallChipButton(
             fontWeight = FontWeight.Bold
         )
     }
+}
+
+/**
+ * Frunk / trunk artwork is model-specific. The Air variants are placeholders (generated from
+ * Icon Images/air_frunk_trunk.jpg) until final Air icons are supplied. UNKNOWN falls back to Gravity.
+ */
+@DrawableRes
+private fun frunkIconRes(model: VehicleModel, isOpen: Boolean): Int = when (model) {
+    VehicleModel.AIR -> if (isOpen) R.drawable.btn_frunk_open_air else R.drawable.btn_open_frunk_air
+    else -> if (isOpen) R.drawable.btn_frunk_open else R.drawable.btn_open_frunk
+}
+
+@DrawableRes
+private fun trunkIconRes(model: VehicleModel, isOpen: Boolean): Int = when (model) {
+    VehicleModel.AIR -> if (isOpen) R.drawable.btn_trunk_open_air else R.drawable.btn_open_trunk_air
+    else -> if (isOpen) R.drawable.btn_trunk_open else R.drawable.btn_open_trunk
 }

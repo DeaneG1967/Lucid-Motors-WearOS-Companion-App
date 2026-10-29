@@ -68,6 +68,7 @@ import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
+import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.theme.AuroraGreen
 import com.droid.lucidgravitywatch.theme.CrimsonAlert
 import com.droid.lucidgravitywatch.theme.CryoBlue
@@ -443,6 +444,22 @@ private fun LucidWatchLoginView(
     }
 }
 
+/**
+ * Frunk / trunk artwork is model-specific. The Air variants are placeholders (generated from
+ * Icon Images/air_frunk_trunk.jpg) until final Air icons are supplied. UNKNOWN falls back to Gravity.
+ */
+@DrawableRes
+private fun frunkIconRes(model: VehicleModel, isOpen: Boolean): Int = when (model) {
+    VehicleModel.AIR -> if (isOpen) R.drawable.btn_frunk_open_air else R.drawable.btn_open_frunk_air
+    else -> if (isOpen) R.drawable.btn_frunk_open else R.drawable.btn_open_frunk
+}
+
+@DrawableRes
+private fun trunkIconRes(model: VehicleModel, isOpen: Boolean): Int = when (model) {
+    VehicleModel.AIR -> if (isOpen) R.drawable.btn_trunk_open_air else R.drawable.btn_open_trunk_air
+    else -> if (isOpen) R.drawable.btn_trunk_open else R.drawable.btn_open_trunk
+}
+
 private enum class PendingConfirmationAction {
     FRUNK,
     LOCK,
@@ -615,7 +632,7 @@ private fun SimplifiedWatchDashboard(
         ) {
             // 1. Frunk Icon Button (matches lock/unlock icon color/line weight and yellow ring when open; original when closed)
             ControlIconButton(
-                drawableRes = if (vehicle.frunkState.isOpen) R.drawable.btn_frunk_open else R.drawable.btn_open_frunk,
+                drawableRes = frunkIconRes(vehicle.model, vehicle.frunkState.isOpen),
                 contentDesc = "Frunk Open Button",
                 isActive = vehicle.frunkState.isOpen,
                 isPrimaryCenter = false,
@@ -638,7 +655,7 @@ private fun SimplifiedWatchDashboard(
 
             // 3. Trunk Icon Button (matches lock/unlock icon color/line weight and yellow ring when open; original when closed)
             ControlIconButton(
-                drawableRes = if (vehicle.rearTrunkState.isOpen) R.drawable.btn_trunk_open else R.drawable.btn_open_trunk,
+                drawableRes = trunkIconRes(vehicle.model, vehicle.rearTrunkState.isOpen),
                 contentDesc = "Trunk Open Button",
                 isActive = vehicle.rearTrunkState.isOpen,
                 isPrimaryCenter = false,

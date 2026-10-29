@@ -125,6 +125,7 @@ class GravityWatchViewModel(
         /** How long polling stays at [RATE_LIMITED_POLL_INTERVAL_MS] after a rate-limit error. */
         const val RATE_LIMIT_BACKOFF_MS = 60_000L
         const val STATE_CONFIRMATION_TIMEOUT_MS = 45_000L
+        private const val CONFIRMATION_TIMEOUT_TICK_MS = 1_000L
         const val WAKE_RETRY_INTERVAL_MS = 30_000L
         /**
          * A car counts as online when two consecutive new reports are at most this far apart in
@@ -736,10 +737,21 @@ class GravityWatchViewModel(
         }
     }
 
+    /**
+     * Gives up waiting for the car to confirm [actionLabel] after [STATE_CONFIRMATION_TIMEOUT_MS] of
+     * polling time. Time while the app is not polling (screen off, app stopped) does not count:
+     * watches dim after 7-15 s, and the car usually confirms in the meantime; the poll made when the
+     * app returns then shows it, instead of a false "not confirmed".
+     */
     private fun startConfirmationTimeout(actionLabel: String) {
         confirmationTimeoutJob?.cancel()
         confirmationTimeoutJob = viewModelScope.launch {
-            delay(STATE_CONFIRMATION_TIMEOUT_MS)
+            var remainingMs = STATE_CONFIRMATION_TIMEOUT_MS
+            while (remainingMs > 0) {
+                val stepMs = minOf(CONFIRMATION_TIMEOUT_TICK_MS, remainingMs)
+                delay(stepMs)
+                if (isPollingPowerStateActive()) remainingMs -= stepMs
+            }
             if (!hasPendingExpectedChanges()) return@launch
             Log.w(
                 TAG,

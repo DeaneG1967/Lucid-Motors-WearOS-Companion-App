@@ -850,22 +850,105 @@ class GravityWatchViewModelTest {
         }
         val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
         viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
-        advanceUntilIdle()
-        assertFalse(viewModel.uiState.value.areControlsLocked)
-
-        viewModel.toggleFrunk()
         runCurrent()
-        assertEquals("Opening Frunk…", viewModel.uiState.value.controlsLockedReason)
+        try {
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.areControlsLocked)
 
-        advanceTimeBy(GravityWatchViewModel.STATE_CONFIRMATION_TIMEOUT_MS - 1)
-        runCurrent()
-        assertTrue(viewModel.uiState.value.areControlsLocked)
+            viewModel.toggleFrunk()
+            runCurrent()
+            assertEquals("Opening Frunk…", viewModel.uiState.value.controlsLockedReason)
 
-        advanceTimeBy(1L)
+            advanceTimeBy(GravityWatchViewModel.STATE_CONFIRMATION_TIMEOUT_MS - 1)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.areControlsLocked)
+
+            advanceTimeBy(1L)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.areControlsLocked)
+            assertEquals("Opening Frunk not confirmed by car", viewModel.uiState.value.errorMessage)
+            assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.frunkState)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
+    @Test
+    fun commandConfirmedWhileScreenWasOff_showsConfirmedStateOnReturn_withoutTimeoutError() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            deferCloudStateUpdateOnCommand = true
+            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1)
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
         runCurrent()
-        assertFalse(viewModel.uiState.value.areControlsLocked)
-        assertEquals("Opening Frunk not confirmed by car", viewModel.uiState.value.errorMessage)
-        assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.frunkState)
+        try {
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            viewModel.toggleFrunk()
+            runCurrent()
+
+            // Wrist lowered: the activity stops and polling is suspended
+            advanceTimeBy(5_000L)
+            viewModel.suspendPolling()
+            runCurrent()
+            // The car opens the frunk while the screen is off
+            repo.snapshot = repo.snapshot.copy(frunkState = DoorState.OPEN)
+
+            // Five minutes with the screen off: the timeout does not run down
+            advanceTimeBy(5 * 60_000L)
+            runCurrent()
+            assertNull(viewModel.uiState.value.errorMessage)
+            assertEquals("Opening Frunk…", viewModel.uiState.value.controlsLockedReason)
+
+            // Raising the wrist polls immediately and confirms
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            assertEquals(DoorState.OPEN, viewModel.uiState.value.activeVehicle?.frunkState)
+            assertFalse(viewModel.uiState.value.areControlsLocked)
+            assertNull(viewModel.uiState.value.errorMessage)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
+    @Test
+    fun confirmationTimeout_countsOnlyTimeWhileAppIsPolling() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            deferCloudStateUpdateOnCommand = true // the car never confirms
+            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1)
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        runCurrent()
+        try {
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            viewModel.toggleFrunk()
+            runCurrent()
+
+            // 30 s on screen, then 10 minutes off screen
+            advanceTimeBy(30_000L)
+            viewModel.suspendPolling()
+            advanceTimeBy(10 * 60_000L)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.areControlsLocked)
+            assertNull(viewModel.uiState.value.errorMessage)
+
+            // Back on screen: the remaining ~15 s of polling time then times out
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            advanceTimeBy(14_000L)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.areControlsLocked)
+            advanceTimeBy(2_000L)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.areControlsLocked)
+            assertEquals("Opening Frunk not confirmed by car", viewModel.uiState.value.errorMessage)
+        } finally {
+            viewModel.suspendPolling()
+        }
     }
 
     @Test
